@@ -19833,7 +19833,6 @@ export namespace Schemas {
        * * `America/Coral_Harbour` - America/Coral_Harbour
        * * `America/Cordoba` - America/Cordoba
        * * `America/Costa_Rica` - America/Costa_Rica
-       * * `America/Coyhaique` - America/Coyhaique
        * * `America/Creston` - America/Creston
        * * `America/Cuiaba` - America/Cuiaba
        * * `America/Curacao` - America/Curacao
@@ -62079,6 +62078,7 @@ export namespace Schemas {
     /**
      * * `customerio` - Customer.io
      * * `resend` - Resend
+     * * `mailgun` - Mailgun
      */
     export type ImportProviderKeyEnum = typeof ImportProviderKeyEnum[keyof typeof ImportProviderKeyEnum];
 
@@ -62086,6 +62086,7 @@ export namespace Schemas {
     export const ImportProviderKeyEnum = {
       Customerio: 'customerio',
       Resend: 'resend',
+      Mailgun: 'mailgun',
     } as const;
 
     export interface ImportStepOption {
@@ -62097,11 +62098,35 @@ export namespace Schemas {
       description: string;
     }
 
+    export interface ImportSettingChoice {
+      /** Value to send for this setting when starting an import. */
+      value: string;
+      /** Display name of the choice. */
+      label: string;
+    }
+
+    export interface ImportSettingOption {
+      /** Setting key to use in `settings` when starting an import, such as `region`. */
+      key: string;
+      /** Display name of the setting. */
+      label: string;
+      /** What the setting changes, and how to choose. */
+      help: string;
+      /** The values the setting accepts. */
+      choices: ImportSettingChoice[];
+      /**
+         * The value used when the request leaves this setting out. Null means it's required.
+         * @nullable
+         */
+      default: string | null;
+    }
+
     export interface ImportProviderOption {
       /** Provider key to send when starting an import.
        *
        * * `customerio` - Customer.io
-       * * `resend` - Resend */
+       * * `resend` - Resend
+       * * `mailgun` - Mailgun */
       key: ImportProviderKeyEnum;
       /** Display name of the provider. */
       label: string;
@@ -62122,6 +62147,8 @@ export namespace Schemas {
       not_imported: string;
       /** What the person does once the import has finished, in order. */
       next_steps: string[];
+      /** Choices to make before starting an import, such as Mailgun's region. Often empty. */
+      settings: ImportSettingOption[];
     }
 
     export interface ImportStepCount {
@@ -91313,7 +91340,6 @@ export namespace Schemas {
        * * `America/Coral_Harbour` - America/Coral_Harbour
        * * `America/Cordoba` - America/Cordoba
        * * `America/Costa_Rica` - America/Costa_Rica
-       * * `America/Coyhaique` - America/Coyhaique
        * * `America/Creston` - America/Creston
        * * `America/Cuiaba` - America/Cuiaba
        * * `America/Curacao` - America/Curacao
@@ -97767,7 +97793,6 @@ export namespace Schemas {
        * * `America/Coral_Harbour` - America/Coral_Harbour
        * * `America/Cordoba` - America/Cordoba
        * * `America/Costa_Rica` - America/Costa_Rica
-       * * `America/Coyhaique` - America/Coyhaique
        * * `America/Creston` - America/Creston
        * * `America/Cuiaba` - America/Cuiaba
        * * `America/Curacao` - America/Curacao
@@ -98639,7 +98664,6 @@ export namespace Schemas {
        * * `America/Coral_Harbour` - America/Coral_Harbour
        * * `America/Cordoba` - America/Cordoba
        * * `America/Costa_Rica` - America/Costa_Rica
-       * * `America/Coyhaique` - America/Coyhaique
        * * `America/Creston` - America/Creston
        * * `America/Cuiaba` - America/Cuiaba
        * * `America/Curacao` - America/Curacao
@@ -100263,6 +100287,11 @@ export namespace Schemas {
     }
 
     /**
+     * The settings the run started with, by setting key.
+     */
+    export type ProviderImportRunSettings = {[key: string]: string};
+
+    /**
      * * `queued` - Waiting to start
      * * `running` - Importing
      * * `completed` - Imported
@@ -100284,7 +100313,8 @@ export namespace Schemas {
       /** The provider the run imports from.
        *
        * * `customerio` - Customer.io
-       * * `resend` - Resend */
+       * * `resend` - Resend
+       * * `mailgun` - Mailgun */
       provider: ImportProviderKeyEnum;
       /** `queued` until the first step starts, `running`, then `completed` when every step completed or `failed` when any step failed.
        *
@@ -100307,6 +100337,8 @@ export namespace Schemas {
          * @nullable
          */
       finished_at: string | null;
+      /** The settings the run started with, by setting key. */
+      settings: ProviderImportRunSettings;
     }
 
     export interface ProviderKeyAlternative {
@@ -116003,11 +116035,17 @@ export namespace Schemas {
       readonly installations: readonly StamphogDiscoveredInstallation[];
     }
 
+    /**
+     * Values for the provider's `settings`, by setting key, from the `providers` endpoint. A setting with a null `default` is required, such as Mailgun's `region`.
+     */
+    export type StartProviderImportSettings = {[key: string]: string};
+
     export interface StartProviderImport {
       /** The provider to import from.
        *
        * * `customerio` - Customer.io
-       * * `resend` - Resend */
+       * * `resend` - Resend
+       * * `mailgun` - Mailgun */
       provider: ImportProviderKeyEnum;
       /**
          * Keys of the steps to run, from the `providers` endpoint. They run in the provider's order, whatever order you send.
@@ -116016,10 +116054,12 @@ export namespace Schemas {
          */
       steps: string[];
       /**
-         * The provider's API key. For Customer.io, an App API key: leave it out to reuse the stored key. For Resend, a full access key: PostHog deletes it when the run ends, so send it every time.
+         * The provider's API key. For Customer.io, an App API key: leave it out to reuse the stored key. For Resend, a full access key, and for Mailgun, an account key that can read suppressions: PostHog deletes these when the run ends, so send one every time.
          * @maxLength 512
          */
       api_key?: string;
+      /** Values for the provider's `settings`, by setting key, from the `providers` endpoint. A setting with a null `default` is required, such as Mailgun's `region`. */
+      settings?: StartProviderImportSettings;
     }
 
     export interface StartTrainingRequest {
