@@ -1165,6 +1165,7 @@ describe('Tool Filtering - Feature Flags', () => {
             'mcp-feature-flag-restore-version',
             'platform-alerts-source-warehouse',
             'workflows-bulk-suppressions-mcp',
+            'workflows-resend-import',
         ]
         expect(allFlags).toEqual(expect.arrayContaining(branchFlags))
         // The flags branches add are asserted on the line above and held out of the list and
