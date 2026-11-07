@@ -40,6 +40,7 @@ from products.messaging.backend.provider_imports.base import (
     UnknownImportStep,
 )
 from products.messaging.backend.provider_imports.emails import exact_email, normalized_email
+from products.messaging.backend.provider_imports.imported_senders import apply_sender
 from products.messaging.backend.provider_imports.liquid_text import literal_liquid
 from products.messaging.backend.provider_imports.resend_templates import (
     ConvertedTemplate,
@@ -562,23 +563,7 @@ def _email_content(
     display_name, address = parseaddr(str(template.get("from") or ""))
     if not address:
         return email, (*subject_notes, "Resend has no sender for this template. Choose one before you send it.")
-    sender = sender_for_address(address, senders)
-    if sender is None:
-        return email, (
-            *subject_notes,
-            f"{address} isn't a PostHog sender yet. Add it, then choose it on this {target}.",
-        )
-    email["from"] = {
-        "integrationId": sender.id,
-        "email": literal_liquid(address),
-        "name": literal_liquid(display_name) or str(sender.config.get("name") or ""),
-    }
-    if not sender.config.get("verified"):
-        return email, (
-            *subject_notes,
-            f"{address} isn't verified in PostHog yet, so this {target} can't send until it is.",
-        )
-    return email, subject_notes
+    return email, (*subject_notes, *apply_sender(email, display_name, address, senders, target))
 
 
 def _fetch_automations(
