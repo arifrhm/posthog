@@ -14866,6 +14866,11 @@ export namespace Schemas {
       failed_delivery_channels: FailedDeliveryChannelsEnum[];
     }
 
+    export interface AlertTransferOwnership {
+      /** New owner's user UUID. Must be an active organization member. Defaults to yourself. */
+      user_uuid?: string;
+    }
+
     /**
      * * `trace` - trace
      * * `generation` - generation
@@ -113961,6 +113966,11 @@ export namespace Schemas {
       outcome: SignalReportCheckOutcomeEnum;
     }
 
+    export interface SubscriptionTransferOwnership {
+      /** New owner's user UUID. Must be an active organization member. Defaults to yourself. */
+      user_uuid?: string;
+    }
+
     export type SubscriptionWriteContextsItem = {
       /** @minimum 1 */
       dashboard_id: number;
@@ -119334,11 +119344,6 @@ export namespace Schemas {
       buckets: TransactionalEmailStatsBucket[];
       /** Totals for the same length of time just before the period. Null when retention no longer covers it. */
       previous: TransactionalEmailStatsCounts | null;
-    }
-
-    export interface TransferOwnership {
-      /** New owner's user UUID. Defaults to yourself. Assigning another member requires organization admin access. */
-      user_uuid?: string;
     }
 
     export interface TranslateRequest {
