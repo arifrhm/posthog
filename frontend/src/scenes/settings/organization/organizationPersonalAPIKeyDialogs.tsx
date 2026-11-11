@@ -52,20 +52,13 @@ export function openRevokeKeyDialog(key: OrganizationPersonalAPIKeyApi, owner: s
         title: 'Revoke personal API key?',
         description: (
             <>
+                <p>
+                    {keyName(key, owner)} will be permanently deleted. Anything that uses it stops working until the
+                    owner creates a new key.
+                </p>
                 {key.reaches_other_organizations ? (
-                    <p>
-                        {keyName(key, owner)} also works in other organizations. Revoking it removes its access to this
-                        organization and gives it a new secret that is not shown to anyone. It keeps its access to the
-                        other organizations, but stops working there until the owner rolls it again in their own
-                        settings.
-                    </p>
-                ) : (
-                    <p>
-                        {keyName(key, owner)} works only in this organization, so revoking it deletes the key. Anything
-                        that uses it stops working until the owner creates a new key.
-                    </p>
-                )}
-                <p>To stop the current value but keep the key's name and scopes, roll the key instead.</p>
+                    <p>This key also works in other organizations. Revoking it stops it working there too.</p>
+                ) : null}
                 <p>The owner gets an email about this change.</p>
             </>
         ),

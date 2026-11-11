@@ -31,7 +31,7 @@ export const personalAPIKeyActivityDescriber: Describer = (logItem: ActivityLogI
     // A row that an admin of another organization wrote carries no user, so name where the actor
     // came from instead of the generic "A user".
     const actor = logItem.detail.context?.acted_by_user_outside_organization ? (
-        <>A user outside your organization</>
+        <>An admin in another organization</>
     ) : (
         <ActivityLogUserName logItem={logItem} />
     )

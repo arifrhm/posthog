@@ -1,3 +1,4 @@
+import html
 import uuid
 import hashlib
 import datetime
@@ -36,6 +37,7 @@ from posthog.helpers.email_utils import (
     ESPSuppressionReason,
     check_esp_suppression,
     sanitize_display_name,
+    sanitize_email_string,
     sanitize_message_body,
 )
 from posthog.helpers.two_factor_session import CODE_TTL_SECONDS
@@ -2589,6 +2591,8 @@ def send_personal_api_keys_changed_by_org_admin(
             "organization_id": organization_id,
         },
     )
+    # The SMTP template autoescapes HTML but does not defang domains like the HTTP transport does.
+    organization_name = html.unescape(sanitize_email_string(organization_name))
     one_change = len(changes) == 1
     keys_noun = "personal API key" if one_change else "personal API keys"
     subject = f"An admin of {organization_name} changed your {keys_noun}"

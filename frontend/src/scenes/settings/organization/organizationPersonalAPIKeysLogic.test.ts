@@ -98,7 +98,20 @@ describe('organizationPersonalAPIKeysLogic', () => {
             toast: { kind: 'success', text: /^Rolled 1\skey$/ },
             event: [
                 'organization personal api key action completed',
-                { action: 'roll', target: 'single', rolled: 1, deleted: 0, access_removed: 0 },
+                { action: 'roll', target: 'single', rolled: 1, deleted: 0 },
+            ],
+        },
+        {
+            name: 'revoke a shared key',
+            run: () => logic.actions.revokeKey('key-ada'),
+            inFlight: 'key-ada',
+            path: '/api/organizations/:organization_id/personal_api_keys/key-ada/revoke/',
+            response: [200, { outcome: 'deleted' }],
+            finish: 'keyActionSuccess',
+            toast: { kind: 'success', text: /^Revoked 1\skey$/ },
+            event: [
+                'organization personal api key action completed',
+                { action: 'revoke', target: 'single', rolled: 0, deleted: 1 },
             ],
         },
         {

@@ -11,9 +11,7 @@
                 {% if change.outcome == "rolled" %}
                     The admin rolled this key, so its old value no longer works in any organization. Roll the key again in your settings to get a new value.
                 {% elif change.outcome == "deleted" %}
-                    The admin deleted this key.
-                {% elif change.outcome == "access_removed" %}
-                    The admin removed this key's access to {{ organization_name }} and rolled the key, so its old value no longer works in any organization. Roll the key again in your settings to get a new value. The key keeps its access to your other organizations.
+                    The admin revoked and permanently deleted this key. It no longer works in any organization. Create a new key in your settings to reconnect integrations that used it.
                 {% endif %}
             </li>
         {% endfor %}

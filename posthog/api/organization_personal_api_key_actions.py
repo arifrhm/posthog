@@ -76,7 +76,6 @@ class KeyReachResolver:
 class KeyActionOutcome(LabeledStrEnum):
     ROLLED = "rolled"
     DELETED = "deleted"
-    ACCESS_REMOVED = "access_removed"
 
 
 @frozen
@@ -87,17 +86,8 @@ class KeyActionResult:
     mask_value: str
 
 
-@frozen
-class _KeyScopes:
-    scoped_teams: list[int] | None
-    scoped_organizations: list[str] | None
-
-
 class OrganizationPersonalAPIKeyActions:
     """Roll and revoke, by an admin of `organization`, of personal API keys that reach it.
-
-    Revoke deletes a key that reaches no other organization. It rolls any other key and removes this
-    organization from its scopes, so the old secret stops working in every organization.
 
     Each action locks the key and computes its reach again. An action returns `None` when the
     locked key no longer reaches the organization.
@@ -125,23 +115,11 @@ class OrganizationPersonalAPIKeyActions:
             key = self._lock(key_id, owner_id)
             if key is None:
                 return None
-            resolver = KeyReachResolver.for_keys([key])
-            reach = resolver.reach(key, self._organization_id)
-            if not reach.reaches_organization:
+            if not KeyReachResolver.for_keys([key]).reach(key, self._organization_id).reaches_organization:
                 return None
-            scopes = self._scopes_without_organization(key, reach, resolver.team_organization_ids)
+            result = self._result(key, KeyActionOutcome.DELETED)
             with ActingUserContext(self._acting_user), OrganizationAdminKeyActionContext(self._organization_id):
-                if scopes is None:
-                    result = self._result(key, KeyActionOutcome.DELETED)
-                    key.delete()
-                else:
-                    result = self._result(key, KeyActionOutcome.ACCESS_REMOVED)
-                    # Roll in its own save before the scope save. A save that changes a scope field logs only
-                    # `created` and `revoked` rows, and after the scope save the roll gets no row in this organization.
-                    PersonalAPIKeySerializer(instance=key).roll(key)
-                    key.scoped_teams = scopes.scoped_teams
-                    key.scoped_organizations = scopes.scoped_organizations
-                    key.save(update_fields=["scoped_teams", "scoped_organizations"])
+                key.delete()
             return result
 
     @staticmethod
@@ -157,26 +135,3 @@ class OrganizationPersonalAPIKeyActions:
     @staticmethod
     def _result(key: PersonalAPIKey, outcome: KeyActionOutcome) -> KeyActionResult:
         return KeyActionResult(outcome=outcome, owner_id=key.user_id, label=key.label, mask_value=key.mask_value or "")
-
-    def _scopes_without_organization(
-        self, key: PersonalAPIKey, reach: KeyReach, team_organization_ids: Mapping[int, str]
-    ) -> _KeyScopes | None:
-        """The key's scopes without this organization, or `None` when the key must be deleted instead.
-
-        An empty or null list removes that limit, and a key with both lists empty has full access. So a
-        change that would empty a list that held entries deletes the key instead. Entries for
-        organizations the owner left and for deleted teams stay, because they grant nothing.
-        """
-        if not reach.other_organization_ids:
-            return None
-        teams, orgs = key.scoped_teams or [], key.scoped_organizations or []
-        if not teams and not orgs:
-            return _KeyScopes(scoped_teams=key.scoped_teams, scoped_organizations=sorted(reach.other_organization_ids))
-        new_teams = [team_id for team_id in teams if team_organization_ids.get(team_id) != self._organization_id]
-        new_orgs = [organization_id for organization_id in orgs if organization_id != self._organization_id]
-        if (teams and not new_teams) or (orgs and not new_orgs):
-            return None
-        return _KeyScopes(
-            scoped_teams=new_teams if teams else key.scoped_teams,
-            scoped_organizations=new_orgs if orgs else key.scoped_organizations,
-        )

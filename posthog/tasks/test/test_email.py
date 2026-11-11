@@ -1,3 +1,4 @@
+import html
 import uuid
 import hashlib
 import datetime as dt
@@ -507,26 +508,33 @@ class TestEmail(APIBaseTest, ClickhouseTestMixin):
         [
             (
                 "one_change",
+                "https://phish.example.com",
                 [{"label": "rolled-key", "mask_value": "phx_...aaaa", "outcome": "rolled"}],
                 "An admin of your organization changed your personal API key",
                 ["made this change to your personal API key:", "Roll the key again in your settings"],
             ),
             (
                 "several_changes",
+                "https://phish.example.com",
                 [
                     {"label": "rolled-key", "mask_value": "phx_...aaaa", "outcome": "rolled"},
                     {"label": "deleted-key", "mask_value": "phx_...bbbb", "outcome": "deleted"},
-                    {"label": "detached-key", "mask_value": "phx_...cccc", "outcome": "access_removed"},
                 ],
                 "An admin of your organization changed your personal API keys",
                 [
                     "made these changes to your personal API keys:",
                     "Roll the key again in your settings",
-                    "The admin deleted this key",
-                    "The admin removed this key's access to your organization and rolled the key, so its old value "
-                    "no longer works in any organization.",
-                    "The key keeps its access to your other organizations.",
+                    "The admin revoked and permanently deleted this key",
+                    "It no longer works in any organization.",
+                    "Create a new key in your settings",
                 ],
+            ),
+            (
+                "bare_domain",
+                "example.com",
+                [{"label": "rolled-key", "mask_value": "phx_...aaaa", "outcome": "rolled"}],
+                "An admin of example.\u200bcom changed your personal API key",
+                ["example.\u200bcom", "Roll the key again in your settings"],
             ),
         ]
     )
@@ -534,12 +542,13 @@ class TestEmail(APIBaseTest, ClickhouseTestMixin):
         self,
         MockEmailMessage: MagicMock,
         _name: str,
+        organization_name: str,
         changes: list[dict[str, str]],
         expected_subject: str,
         expected_in_body: list[str],
     ) -> None:
         mocked_email_messages = mock_email_messages(MockEmailMessage)
-        self.organization.name = "https://phish.example.com"
+        self.organization.name = organization_name
         self.organization.save()
 
         send_personal_api_keys_changed_by_org_admin(
@@ -552,7 +561,7 @@ class TestEmail(APIBaseTest, ClickhouseTestMixin):
         assert message.subject == expected_subject
         assert "phish.example.com" not in message.html_body
         for expected in ["acting-admin@example.com", "phx_...aaaa", *expected_in_body]:
-            assert expected in message.html_body, expected
+            assert expected in html.unescape(message.html_body), expected
 
     def test_send_provisioning_welcome(self, MockEmailMessage: MagicMock) -> None:
         mocked_email_messages = mock_email_messages(MockEmailMessage)

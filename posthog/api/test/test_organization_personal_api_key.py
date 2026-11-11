@@ -5,15 +5,20 @@ from posthog.test.base import APIBaseTest
 from unittest.mock import MagicMock, patch
 
 from django.conf import settings
+from django.core.signing import TimestampSigner
+from django.test import override_settings
 from django.utils import timezone
 
+from loginas import settings as loginas_settings
 from parameterized import parameterized
 from rest_framework import status
 
 from posthog.constants import AvailableFeature
+from posthog.jwt import PosthogJwtAudience, encode_jwt
 from posthog.models import Organization, OrganizationMembership, PersonalAPIKey, Team, User
 from posthog.models.activity_logging.activity_log import ActivityLog
 from posthog.models.utils import generate_random_token_personal, hash_key_value, mask_key_value
+from posthog.storage.team_access_cache import TOKEN_CACHE_PREFIX, token_auth_cache
 from posthog.tasks.email import send_personal_api_keys_changed_by_org_admin
 
 
@@ -186,22 +191,23 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
 
     @parameterized.expand(
         [
-            ("unscoped", (), (), None, ("B",)),
-            ("org_scoped", (), ("O", "B"), None, ("B",)),
-            ("team_scoped", ("O", "B"), (), ("B",), None),
-            ("team_and_org_scoped", ("O", "B"), ("O", "B"), ("B",), ("B",)),
+            ("unscoped_multi_org", True, (), ()),
+            ("org_scoped_multi_org", True, (), ("O", "B")),
+            ("team_scoped_multi_org", True, ("O", "B"), ()),
+            ("team_and_org_scoped_multi_org", True, ("O", "B"), ("O", "B")),
+            ("unscoped_owner_only_in_o", False, (), ()),
+            ("org_scoped_to_o", True, (), ("O",)),
+            ("org_scoped_to_o_and_left_c", True, (), ("O", "C")),
+            ("teams_o_b_orgs_o", True, ("O", "B"), ("O",)),
+            ("teams_o_orgs_o_b", True, ("O",), ("O", "B")),
+            ("teams_o_and_deleted_team", False, ("O", "deleted"), ()),
         ]
     )
-    def test_revoke_removes_only_this_org(
-        self,
-        _name: str,
-        team_refs: tuple[str, ...],
-        org_refs: tuple[str, ...],
-        expected_team_refs: tuple[str, ...] | None,
-        expected_org_refs: tuple[str, ...] | None,
+    def test_revoke_deletes_key_regardless_of_other_org_access(
+        self, _name: str, owner_joins_b: bool, team_refs: tuple[str, ...], org_refs: tuple[str, ...]
     ) -> None:
         self._set_level(OrganizationMembership.Level.ADMIN)
-        owner = self._create_owner_in_other_orgs()
+        owner = self._create_owner_in_other_orgs(owner_joins_b=owner_joins_b)
         old_value = generate_random_token_personal()
         key = self._create_scoped_key(owner, team_refs, org_refs, value=old_value, scopes=["user:read"])
         self.client.logout()
@@ -211,41 +217,13 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         response = self.client.post(self._action_url(key, "revoke"))
 
         assert response.status_code == status.HTTP_200_OK, response.content
-        assert response.json() == {"outcome": "access_removed"}
-        key.refresh_from_db()
-        assert key.scoped_teams == (
-            None if expected_team_refs is None else [self.team_refs[ref] for ref in expected_team_refs]
-        )
-        assert key.scoped_organizations == (
-            None if expected_org_refs is None else [self.org_refs[ref] for ref in expected_org_refs]
-        )
-        assert key.id not in {row["id"] for row in self.client.get(self._url()).json()["results"]}
-        self.client.logout()
-        response = self.client.get("/api/users/@me/", HTTP_AUTHORIZATION=f"Bearer {old_value}")
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
-
-    @parameterized.expand(
-        [
-            ("unscoped_owner_only_in_o", False, (), ()),
-            ("org_scoped_to_o", True, (), ("O",)),
-            ("org_scoped_to_o_and_left_c", True, (), ("O", "C")),
-            ("teams_o_b_orgs_o", True, ("O", "B"), ("O",)),
-            ("teams_o_orgs_o_b", True, ("O",), ("O", "B")),
-            ("teams_o_and_deleted_team", False, ("O", "deleted"), ()),
-        ]
-    )
-    def test_revoke_deletes_when_no_other_live_reach(
-        self, _name: str, owner_joins_b: bool, team_refs: tuple[str, ...], org_refs: tuple[str, ...]
-    ) -> None:
-        self._set_level(OrganizationMembership.Level.ADMIN)
-        owner = self._create_owner_in_other_orgs(owner_joins_b=owner_joins_b)
-        key = self._create_scoped_key(owner, team_refs, org_refs)
-
-        response = self.client.post(self._action_url(key, "revoke"))
-
-        assert response.status_code == status.HTTP_200_OK, response.content
         assert response.json() == {"outcome": "deleted"}
         assert not PersonalAPIKey.objects.filter(pk=key.pk).exists()
+        self.client.logout()
+        assert (
+            self.client.get("/api/users/@me/", HTTP_AUTHORIZATION=f"Bearer {old_value}").status_code
+            == status.HTTP_401_UNAUTHORIZED
+        )
 
     @parameterized.expand([("single_org", ("O",)), ("multi_org", ("O", "B"))])
     def test_roll_replaces_secret_without_revealing_it(self, _name: str, org_refs: tuple[str, ...]) -> None:
@@ -288,28 +266,30 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         [
             ("roll", "roll", ("O",)),
             ("revoke_delete", "revoke", ("O",)),
-            ("revoke_detach", "revoke", ("O", "B")),
+            ("revoke_shared", "revoke", ("O", "B")),
         ]
     )
-    @patch("posthog.tasks.team_access_cache_tasks.invalidate_token_sync")
-    def test_actions_invalidate_auth_cache(
-        self, _name: str, action: str, org_refs: tuple[str, ...], mock_invalidate: MagicMock
-    ) -> None:
+    @override_settings(FLAGS_REDIS_URL=settings.REDIS_URL)
+    def test_actions_invalidate_auth_cache(self, _name: str, action: str, org_refs: tuple[str, ...]) -> None:
         self._set_level(OrganizationMembership.Level.ADMIN)
         owner = self._create_owner_in_other_orgs()
         key = self._create_scoped_key(owner, (), org_refs)
+
+        cache_key = f"{TOKEN_CACHE_PREFIX}{key.secure_value}"
+        token_auth_cache.redis.set(cache_key, "cached-auth", ex=60)
+        self.addCleanup(token_auth_cache.redis.delete, cache_key)
 
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(self._action_url(key, action))
 
         assert response.status_code == status.HTTP_200_OK, response.content
-        mock_invalidate.assert_any_call(key.secure_value)
+        assert token_auth_cache.redis.get(cache_key) is None
 
     @parameterized.expand(
         [
             ("roll", "roll", ("O", "B"), ["updated"], "updated"),
             ("revoke_delete", "revoke", ("O",), ["deleted"], None),
-            ("revoke_detach", "revoke", ("O", "B"), ["revoked", "updated"], "updated"),
+            ("revoke_shared", "revoke", ("O", "B"), ["deleted"], "deleted"),
         ]
     )
     def test_actions_write_activity_in_org_with_admin_actor(
@@ -382,21 +362,35 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         assert response.json()["code"] == "sensitive_action_required_reauth"
         assert list_response.status_code == status.HTTP_200_OK, list_response.content
 
-    @parameterized.expand([("roll",), ("revoke",)])
-    def test_actions_reject_personal_api_key_auth(self, action: str) -> None:
+    @parameterized.expand(
+        [(action, auth) for action in ("roll", "revoke") for auth in ("personal_api_key", "jwt", "impersonation")]
+    )
+    def test_actions_require_non_impersonated_session(self, action: str, auth: str) -> None:
         self._set_level(OrganizationMembership.Level.ADMIN)
-        admin_value = generate_random_token_personal()
-        self._create_key(self.user, value=admin_value, scopes=["*"])
         key = self._create_key(User.objects.create_and_join(self.organization, "member@example.com", None))
         url = self._action_url(key, action)
-        self.client.logout()
-
-        response = self.client.post(url, HTTP_AUTHORIZATION=f"Bearer {admin_value}")
+        if auth == "impersonation":
+            staff = User.objects.create(email="staff@example.com", is_staff=True)
+            session = self.client.session
+            session[loginas_settings.USER_SESSION_FLAG] = TimestampSigner().sign(str(staff.pk))
+            session.save()
+            assert self.client.get(self._url()).status_code == status.HTTP_200_OK
+            response = self.client.post(url)
+        else:
+            if auth == "jwt":
+                token = encode_jwt({"id": self.user.id}, timedelta(minutes=5), PosthogJwtAudience.IMPERSONATED_USER)
+            else:
+                token = generate_random_token_personal()
+                self._create_key(self.user, value=token, scopes=["*"])
+            self.client.logout()
+            if auth == "jwt":
+                assert self.client.get(self._url(), HTTP_AUTHORIZATION=f"Bearer {token}").status_code == 200
+            response = self.client.post(url, HTTP_AUTHORIZATION=f"Bearer {token}")
 
         assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
         assert PersonalAPIKey.objects.get(pk=key.pk).secure_value == key.secure_value
 
-    @parameterized.expand([("delete", ("O",), "deleted"), ("detach", ("O", "B"), "access_removed")])
+    @parameterized.expand([("delete", ("O",), "deleted"), ("shared", ("O", "B"), "deleted")])
     @patch.object(send_personal_api_keys_changed_by_org_admin, "delay")
     def test_owner_gets_email_with_change(
         self, _name: str, org_refs: tuple[str, ...], expected_outcome: str, mock_delay: MagicMock

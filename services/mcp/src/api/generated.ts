@@ -63227,7 +63227,6 @@ export namespace Schemas {
     /**
      * * `rolled` - Rolled
      * * `deleted` - Deleted
-     * * `access_removed` - Access Removed
      */
     export type KeyActionOutcomeEnum = typeof KeyActionOutcomeEnum[keyof typeof KeyActionOutcomeEnum];
 
@@ -63235,7 +63234,6 @@ export namespace Schemas {
     export const KeyActionOutcomeEnum = {
       Rolled: 'rolled',
       Deleted: 'deleted',
-      AccessRemoved: 'access_removed',
     } as const;
 
     /**
@@ -73573,11 +73571,10 @@ export namespace Schemas {
     }
 
     export interface OrganizationPersonalAPIKeyActionResult {
-      /** What happened to the key. 'rolled': the key has a new secret that nobody sees, and the old secret no longer works anywhere. 'deleted': the key no longer exists. 'access_removed': the key no longer works in this organization. It also has a new secret that nobody sees, so the old secret no longer works anywhere. It keeps its access to the owner's other organizations.
+      /** What happened to the key. 'rolled': the key has a new secret that nobody sees, and the old secret no longer works anywhere. 'deleted': the key no longer exists and cannot be used in any organization.
        *
        * * `rolled` - Rolled
-       * * `deleted` - Deleted
-       * * `access_removed` - Access Removed */
+       * * `deleted` - Deleted */
       outcome: KeyActionOutcomeEnum;
     }
 

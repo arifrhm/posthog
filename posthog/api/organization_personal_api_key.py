@@ -7,8 +7,10 @@ from django.db import transaction
 from django.db.models import QuerySet
 
 from drf_spectacular.utils import extend_schema, extend_schema_field
+from loginas.utils import is_impersonated_session
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.exceptions import NotFound
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 
@@ -20,6 +22,7 @@ from posthog.api.organization_personal_api_key_actions import (
 )
 from posthog.api.routing import TeamAndOrgViewSetMixin
 from posthog.api.utils import action
+from posthog.auth import SessionAuthentication
 from posthog.constants import AvailableFeature
 from posthog.models import User
 from posthog.models.personal_api_key import PersonalAPIKey, get_organization_personal_api_keys
@@ -29,6 +32,15 @@ from posthog.permissions import (
     TimeSensitiveActionPermission,
 )
 from posthog.tasks.email import send_personal_api_keys_changed_by_org_admin
+
+
+class OrganizationPersonalAPIKeyActionPermission(BasePermission):
+    message = "Sign in with your own account to change personal API keys."
+
+    def has_permission(self, request: Request, view: Any) -> bool:
+        return request.method in SAFE_METHODS or (
+            isinstance(request.successful_authenticator, SessionAuthentication) and not is_impersonated_session(request)
+        )
 
 
 class OrganizationPersonalAPIKeyOwnerSerializer(serializers.Serializer):
@@ -121,9 +133,7 @@ class OrganizationPersonalAPIKeyActionResultSerializer(serializers.Serializer):
     outcome = serializers.ChoiceField(
         choices=KeyActionOutcome.choices,
         help_text="What happened to the key. 'rolled': the key has a new secret that nobody sees, and the old "
-        "secret no longer works anywhere. 'deleted': the key no longer exists. 'access_removed': the key no "
-        "longer works in this organization. It also has a new secret that nobody sees, so the old secret no longer "
-        "works anywhere. It keeps its access to the owner's other organizations.",
+        "secret no longer works anywhere. 'deleted': the key no longer exists and cannot be used in any organization.",
     )
 
 
@@ -135,7 +145,12 @@ class OrganizationPersonalAPIKeyViewSet(
 ):
     scope_object = "INTERNAL"
     serializer_class = OrganizationPersonalAPIKeySerializer
-    permission_classes = [OrganizationAdminReadPermissions, PremiumFeaturePermission, TimeSensitiveActionPermission]
+    permission_classes = [
+        OrganizationAdminReadPermissions,
+        PremiumFeaturePermission,
+        OrganizationPersonalAPIKeyActionPermission,
+        TimeSensitiveActionPermission,
+    ]
     premium_feature = AvailableFeature.ORGANIZATION_SECURITY_SETTINGS
     queryset = PersonalAPIKey.objects.none()
     # PersonalAPIKey has no organization_id; the parent lookup resolves through the owner's membership.

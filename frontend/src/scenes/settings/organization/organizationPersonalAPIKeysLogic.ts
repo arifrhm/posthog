@@ -22,24 +22,19 @@ export type KeyActionTarget = 'single'
 interface KeyActionCounts {
     rolled: number
     deleted: number
-    access_removed: number
 }
 
 function countsFromOutcome({ outcome }: OrganizationPersonalAPIKeyActionResultApi): KeyActionCounts {
     return {
         rolled: outcome === 'rolled' ? 1 : 0,
         deleted: outcome === 'deleted' ? 1 : 0,
-        access_removed: outcome === 'access_removed' ? 1 : 0,
     }
 }
 
-function describeCounts({ rolled, deleted, access_removed }: KeyActionCounts): string {
+function describeCounts({ rolled, deleted }: KeyActionCounts): string {
     const parts = [
         rolled ? `rolled ${pluralize(rolled, 'key')}` : null,
-        deleted ? `deleted ${pluralize(deleted, 'key')}` : null,
-        access_removed
-            ? `rolled ${pluralize(access_removed, 'key')} and removed ${access_removed === 1 ? 'it' : 'them'} from this organization`
-            : null,
+        deleted ? `revoked ${pluralize(deleted, 'key')}` : null,
     ].filter((part): part is string => part !== null)
     return parts.length ? capitalizeFirstLetter(parts.join(', ')) : 'No keys changed'
 }
