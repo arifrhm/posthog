@@ -1,3 +1,5 @@
+import { MOCK_DEFAULT_USER } from 'lib/api.mock'
+
 import { expectLogic } from 'kea-test-utils'
 import posthog from 'posthog-js'
 
@@ -28,6 +30,16 @@ const MOCK_KEYS = [
         reaches_other_organizations: false,
         last_used_at: '2026-02-01T00:00:00Z',
         created_at: '2026-01-15T00:00:00Z',
+    },
+    {
+        id: 'key-mine',
+        owner: { first_name: 'John', last_name: 'Doe', email: MOCK_DEFAULT_USER.email },
+        mask_value: 'phx_***9012',
+        scopes: ['*'],
+        access_scope: { type: 'organization' },
+        reaches_other_organizations: false,
+        last_used_at: null,
+        created_at: '2026-01-20T00:00:00Z',
     },
 ]
 
@@ -87,7 +99,64 @@ describe('organizationPersonalAPIKeysLogic', () => {
         expect(logic.values.filteredKeys).toEqual([])
     })
 
+    it('summarizes keys for the bulk dialogs', async () => {
+        await expectLogic(logic).toFinishAllListeners()
+
+        // A bulk action changes every key, so the search box must not narrow the summary.
+        logic.actions.setSearch('lovelace')
+        expect(logic.values.bulkSummary).toEqual({ total: 3, alsoInOtherOrganizations: 1, ownedByMe: 1 })
+    })
+
     it.each([
+        {
+            name: 'roll all keys',
+            run: () => logic.actions.rollAllKeys(),
+            inFlight: 'all',
+            path: '/api/organizations/:organization_id/personal_api_keys/roll_all/',
+            response: [200, { rolled: 3, deleted: 0 }],
+            finish: 'keyActionSuccess',
+            toast: { kind: 'success', text: /^Rolled 3\skeys$/ },
+            event: [
+                'organization personal api key action completed',
+                { action: 'roll', target: 'all', rolled: 3, deleted: 0 },
+            ],
+        },
+        {
+            name: 'revoke all keys',
+            run: () => logic.actions.revokeAllKeys(),
+            inFlight: 'all',
+            path: '/api/organizations/:organization_id/personal_api_keys/revoke_all/',
+            response: [200, { rolled: 0, deleted: 3 }],
+            finish: 'keyActionSuccess',
+            toast: { kind: 'success', text: /^Revoked 3\skeys$/ },
+            event: [
+                'organization personal api key action completed',
+                { action: 'revoke', target: 'all', rolled: 0, deleted: 3 },
+            ],
+        },
+        {
+            name: 'revoke all keys that fails partway',
+            run: () => logic.actions.revokeAllKeys(),
+            inFlight: 'all',
+            path: '/api/organizations/:organization_id/personal_api_keys/revoke_all/',
+            response: [500, { detail: 'A server error occurred.' }],
+            finish: 'keyActionFailure',
+            toast: { kind: 'error', text: /Some keys may already have changed/ },
+            event: ['organization personal api key action failed', { action: 'revoke', target: 'all', status: 500 }],
+        },
+        {
+            name: 'roll all keys that a permission check rejects',
+            run: () => logic.actions.rollAllKeys(),
+            inFlight: 'all',
+            path: '/api/organizations/:organization_id/personal_api_keys/roll_all/',
+            response: [403, { detail: 'You do not have permission to perform this action.' }],
+            finish: 'keyActionFailure',
+            toast: {
+                kind: 'error',
+                text: /^Couldn't roll all keys\. You do not have permission to perform this action\.$/,
+            },
+            event: ['organization personal api key action failed', { action: 'roll', target: 'all', status: 403 }],
+        },
         {
             name: 'roll one key',
             run: () => logic.actions.rollKey('key-ada'),

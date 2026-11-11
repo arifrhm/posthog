@@ -73578,6 +73578,13 @@ export namespace Schemas {
       outcome: KeyActionOutcomeEnum;
     }
 
+    export interface OrganizationPersonalAPIKeyBulkActionResult {
+      /** Number of keys that got a new secret that nobody sees. Their old secrets no longer work anywhere. */
+      rolled: number;
+      /** Number of keys that no longer exist. */
+      deleted: number;
+    }
+
     export interface OrganizationRemoveBlockedMembersResponse {
       /** Whether verified-domain enforcement was turned on. */
       success: boolean;

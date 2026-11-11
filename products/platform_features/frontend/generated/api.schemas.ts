@@ -634,6 +634,13 @@ export interface OrganizationPersonalAPIKeyActionResultApi {
     outcome: KeyActionOutcomeEnumApi
 }
 
+export interface OrganizationPersonalAPIKeyBulkActionResultApi {
+    /** Number of keys that got a new secret that nobody sees. Their old secrets no longer work anywhere. */
+    rolled: number
+    /** Number of keys that no longer exist. */
+    deleted: number
+}
+
 /**
  * * `waiting` - Waiting
  * * `issuing` - Issuing

@@ -1,5 +1,5 @@
-from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections import Counter, defaultdict
+from collections.abc import Callable, Mapping, Sequence
 
 from django.db import transaction
 
@@ -9,7 +9,7 @@ from posthog.enums import LabeledStrEnum
 from posthog.models import Organization, OrganizationMembership, Team, User
 from posthog.models.activity_logging.model_activity import ActingUserContext
 from posthog.models.activity_logging.personal_api_key_utils import OrganizationAdminKeyActionContext
-from posthog.models.personal_api_key import PersonalAPIKey
+from posthog.models.personal_api_key import PersonalAPIKey, get_organization_personal_api_keys
 
 
 @frozen
@@ -86,6 +86,29 @@ class KeyActionResult:
     mask_value: str
 
 
+@frozen
+class KeyActionCounts:
+    rolled: int
+    deleted: int
+
+    @classmethod
+    def of(cls, results: Sequence[KeyActionResult]) -> "KeyActionCounts":
+        outcomes = Counter(result.outcome for result in results)
+        return cls(
+            rolled=outcomes[KeyActionOutcome.ROLLED],
+            deleted=outcomes[KeyActionOutcome.DELETED],
+        )
+
+
+class BulkKeyActionInterrupted(Exception):
+    """A bulk action stopped at a key that raised. Each key commits in its own transaction, so the
+    keys in `results` stay changed and their owners still need an email."""
+
+    def __init__(self, results: list[KeyActionResult]) -> None:
+        super().__init__(f"Bulk key action stopped after {len(results)} changed keys")
+        self.results = results
+
+
 class OrganizationPersonalAPIKeyActions:
     """Roll and revoke, by an admin of `organization`, of personal API keys that reach it.
 
@@ -129,6 +152,26 @@ class OrganizationPersonalAPIKeyActions:
             with ActingUserContext(self._acting_user), OrganizationAdminKeyActionContext(self._organization_id):
                 key.delete()
             return result
+
+    def roll_all(self) -> tuple[KeyActionCounts, list[KeyActionResult]]:
+        return self._act_on_all(self.roll)
+
+    def revoke_all(self) -> tuple[KeyActionCounts, list[KeyActionResult]]:
+        return self._act_on_all(self.revoke)
+
+    def _act_on_all(
+        self, act: Callable[[str, int], KeyActionResult | None]
+    ) -> tuple[KeyActionCounts, list[KeyActionResult]]:
+        keys = list(get_organization_personal_api_keys(self._organization).order_by("pk").values_list("id", "user_id"))
+        results: list[KeyActionResult] = []
+        for key_id, owner_id in keys:
+            try:
+                result = act(key_id, owner_id)
+            except Exception as exc:
+                raise BulkKeyActionInterrupted(results) from exc
+            if result is not None:
+                results.append(result)
+        return KeyActionCounts.of(results), results
 
     @staticmethod
     def _lock(key_id: str, owner_id: int) -> PersonalAPIKey | None:

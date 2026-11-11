@@ -11,8 +11,13 @@ import { ScopeGroupSummary } from 'scenes/settings/user/scopes/ScopeGroupSummary
 
 import type { OrganizationPersonalAPIKeyApi } from 'products/platform_features/frontend/generated/api.schemas'
 
-import { openRevokeKeyDialog, openRollKeyDialog } from './organizationPersonalAPIKeyDialogs'
-import { KeyAction, organizationPersonalAPIKeysLogic } from './organizationPersonalAPIKeysLogic'
+import {
+    openRevokeAllKeysDialog,
+    openRevokeKeyDialog,
+    openRollAllKeysDialog,
+    openRollKeyDialog,
+} from './organizationPersonalAPIKeyDialogs'
+import { ALL_KEYS, KeyAction, organizationPersonalAPIKeysLogic } from './organizationPersonalAPIKeysLogic'
 
 function AccessScope({ accessScope }: { accessScope: OrganizationPersonalAPIKeyApi['access_scope'] }): JSX.Element {
     if (accessScope.type === 'all') {
@@ -29,9 +34,11 @@ function ownerLabel(owner: OrganizationPersonalAPIKeyApi['owner']): string {
 }
 
 export function OrganizationPersonalAPIKeysTable(): JSX.Element {
-    const { filteredKeys, keysLoading, search, keyActionInFlight } = useValues(organizationPersonalAPIKeysLogic)
-    const { setSearch, rollKey, revokeKey } = useActions(organizationPersonalAPIKeysLogic)
-    // The in-flight marker names the key but not the action, so this records the action to
+    const { filteredKeys, keysLoading, search, keyActionInFlight, bulkSummary } = useValues(
+        organizationPersonalAPIKeysLogic
+    )
+    const { setSearch, rollKey, revokeKey, rollAllKeys, revokeAllKeys } = useActions(organizationPersonalAPIKeysLogic)
+    // The in-flight marker names the target (a key id or 'all') but not the action, so this records the action to
     // put the spinner on the right button. It never needs a reset, because a spinner also needs the marker to match.
     const [confirmedAction, setConfirmedAction] = useState<KeyAction | null>(null)
 
@@ -45,6 +52,10 @@ export function OrganizationPersonalAPIKeysTable(): JSX.Element {
     // buttons disabled on the stale list until the reload ends.
     const actionDisabledReason =
         keyActionInFlight !== null ? 'Wait for the current action to finish' : keysLoading ? 'Loading keys' : null
+    const bulkDisabledReason =
+        actionDisabledReason ??
+        (bulkSummary.total === 0 ? 'No personal API keys have access to this organization' : null)
+
     const columns: LemonTableColumns<OrganizationPersonalAPIKeyApi> = [
         {
             title: 'Owner',
@@ -141,6 +152,28 @@ export function OrganizationPersonalAPIKeysTable(): JSX.Element {
                     onChange={setSearch}
                     className="grow min-w-60 max-w-80"
                 />
+                <div className="flex flex-wrap gap-2 ml-auto">
+                    <LemonButton
+                        type="secondary"
+                        loading={isRunning(ALL_KEYS, 'roll')}
+                        disabledReason={isRunning(ALL_KEYS, 'roll') ? null : bulkDisabledReason}
+                        onClick={() => openRollAllKeysDialog(bulkSummary, search, () => runAction('roll', rollAllKeys))}
+                        data-attr="organization-personal-api-keys-roll-all"
+                    >
+                        Roll all keys
+                    </LemonButton>
+                    <LemonButton
+                        type="secondary"
+                        loading={isRunning(ALL_KEYS, 'revoke')}
+                        disabledReason={isRunning(ALL_KEYS, 'revoke') ? null : bulkDisabledReason}
+                        onClick={() =>
+                            openRevokeAllKeysDialog(bulkSummary, search, () => runAction('revoke', revokeAllKeys))
+                        }
+                        data-attr="organization-personal-api-keys-revoke-all"
+                    >
+                        Revoke all keys
+                    </LemonButton>
+                </div>
             </div>
             <LemonTable
                 dataSource={filteredKeys}
