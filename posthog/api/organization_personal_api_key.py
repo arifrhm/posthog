@@ -17,8 +17,8 @@ from rest_framework.response import Response
 from posthog.api.organization_personal_api_key_actions import (
     KeyActionOutcome,
     KeyActionResult,
-    KeyReachResolver,
     OrganizationPersonalAPIKeyActions,
+    PersonalAPIKeyOrganizationAccessResolver,
 )
 from posthog.api.routing import TeamAndOrgViewSetMixin
 from posthog.api.utils import action
@@ -124,9 +124,11 @@ class OrganizationPersonalAPIKeySerializer(serializers.ModelSerializer):
     def get_reaches_other_organizations(self, key: PersonalAPIKey) -> bool:
         # The view puts a shared resolver in the context only for a list, so that a page of keys costs a fixed
         # number of queries. Any other use resolves the one key on its own.
-        resolver: KeyReachResolver = self.context.get("reach_resolver") or KeyReachResolver.for_keys([key])
+        resolver: PersonalAPIKeyOrganizationAccessResolver = self.context.get(
+            "organization_access_resolver"
+        ) or PersonalAPIKeyOrganizationAccessResolver.for_keys([key])
         organization_id = str(self.context["get_organization"]().id)
-        return bool(resolver.reach(key, organization_id).other_organization_ids)
+        return bool(resolver.resolve(key, organization_id).other_organization_ids)
 
 
 class OrganizationPersonalAPIKeyActionResultSerializer(serializers.Serializer):
@@ -176,7 +178,7 @@ class OrganizationPersonalAPIKeyViewSet(
         # Copy a passed context, so that adding the resolver does not change the caller's dict.
         context = dict(kwargs["context"]) if "context" in kwargs else self.get_serializer_context()
         if kwargs.get("many") and args:
-            context["reach_resolver"] = KeyReachResolver.for_keys(list(args[0]))
+            context["organization_access_resolver"] = PersonalAPIKeyOrganizationAccessResolver.for_keys(list(args[0]))
         kwargs["context"] = context
         return super().get_serializer(*args, **kwargs)
 

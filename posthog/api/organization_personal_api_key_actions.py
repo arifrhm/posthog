@@ -13,13 +13,13 @@ from posthog.models.personal_api_key import PersonalAPIKey
 
 
 @frozen
-class KeyReach:
-    reaches_organization: bool
+class PersonalAPIKeyOrganizationAccess:
+    has_access_to_organization: bool
     other_organization_ids: frozenset[str]
 
 
-class KeyReachResolver:
-    """Reach follows `posthog/permissions.py`, which applies each non-empty `scoped_teams` and
+class PersonalAPIKeyOrganizationAccessResolver:
+    """Organization access follows `posthog/permissions.py`, which applies each non-empty `scoped_teams` and
     `scoped_organizations` list as its own limit. An organization the owner left never counts."""
 
     def __init__(
@@ -29,7 +29,7 @@ class KeyReachResolver:
         self.team_organization_ids = team_organization_ids
 
     @classmethod
-    def for_keys(cls, keys: Sequence[PersonalAPIKey]) -> "KeyReachResolver":
+    def for_keys(cls, keys: Sequence[PersonalAPIKey]) -> "PersonalAPIKeyOrganizationAccessResolver":
         owner_ids = {key.user_id for key in keys}
         scoped_team_ids = {team_id for key in keys for team_id in key.scoped_teams or []}
 
@@ -53,7 +53,7 @@ class KeyReachResolver:
             team_organization_ids=team_organization_ids,
         )
 
-    def reach(self, key: PersonalAPIKey, organization_id: str) -> KeyReach:
+    def resolve(self, key: PersonalAPIKey, organization_id: str) -> PersonalAPIKeyOrganizationAccess:
         live = self._member_organization_ids.get(key.user_id, frozenset())
         team_org = self.team_organization_ids
         teams, orgs = key.scoped_teams or [], key.scoped_organizations or []
@@ -67,8 +67,8 @@ class KeyReachResolver:
             reachable = set(orgs) & live
         else:
             reachable = set(live)
-        return KeyReach(
-            reaches_organization=organization_id in reachable,
+        return PersonalAPIKeyOrganizationAccess(
+            has_access_to_organization=organization_id in reachable,
             other_organization_ids=frozenset(reachable - {organization_id}),
         )
 
@@ -89,7 +89,7 @@ class KeyActionResult:
 class OrganizationPersonalAPIKeyActions:
     """Roll and revoke, by an admin of `organization`, of personal API keys that reach it.
 
-    Each action locks the key and computes its reach again. An action returns `None` when the
+    Each action locks the key and checks its organization access again. An action returns `None` when the
     locked key no longer reaches the organization.
     """
 
@@ -103,7 +103,11 @@ class OrganizationPersonalAPIKeyActions:
             key = self._lock(key_id, owner_id)
             if key is None:
                 return None
-            if not KeyReachResolver.for_keys([key]).reach(key, self._organization_id).reaches_organization:
+            if (
+                not PersonalAPIKeyOrganizationAccessResolver.for_keys([key])
+                .resolve(key, self._organization_id)
+                .has_access_to_organization
+            ):
                 return None
             result = self._result(key, KeyActionOutcome.ROLLED)
             with ActingUserContext(self._acting_user), OrganizationAdminKeyActionContext(self._organization_id):
@@ -115,7 +119,11 @@ class OrganizationPersonalAPIKeyActions:
             key = self._lock(key_id, owner_id)
             if key is None:
                 return None
-            if not KeyReachResolver.for_keys([key]).reach(key, self._organization_id).reaches_organization:
+            if (
+                not PersonalAPIKeyOrganizationAccessResolver.for_keys([key])
+                .resolve(key, self._organization_id)
+                .has_access_to_organization
+            ):
                 return None
             result = self._result(key, KeyActionOutcome.DELETED)
             with ActingUserContext(self._acting_user), OrganizationAdminKeyActionContext(self._organization_id):
