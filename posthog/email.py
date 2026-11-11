@@ -223,6 +223,11 @@ WORKFLOWS_TEMPLATE_ID_MAP: dict[str, str] = {
     "workload_trust_policy_changed": "01a19e4f-595d-0000-bb58-5b9ae018bceb",
 }
 
+# These templates have no Customer.io equivalent, so they do not use the migration rollout flag.
+WORKFLOWS_ONLY_TEMPLATE_ID_MAP: dict[str, str] = {
+    "personal_api_key_changed_by_org_admin": "01a1cc79-d82c-0000-732e-c847b629727e",
+}
+
 # Release conditions match the `email`, `transactional_email_template` and `region` person properties passed at
 # evaluation, so one flag picks the recipients, the templates that move and the instances that move them. Both regions
 # send to the US project, so a condition on `region` lets each one roll out on its own.
@@ -335,19 +340,20 @@ def _never_connected(err: requests.ConnectionError) -> bool:
 def get_workflows_template_id(
     template_name: str, dest: dict[str, str], pinned_template_id: str | None = None
 ) -> str | None:
-    """The message template to send this email with through Workflows, or None to send it through Customer.io.
+    """The Workflows template to use, or None when no Workflows route is configured.
 
-    A pinned template skips only the flag. The settings checks still apply, because they turn Workflows off.
+    Pinned and Workflows-only templates skip the migration flag. The settings checks still apply.
     """
-    template_id = pinned_template_id or WORKFLOWS_TEMPLATE_ID_MAP.get(template_name)
+    workflows_only_template_id = WORKFLOWS_ONLY_TEMPLATE_ID_MAP.get(template_name)
+    template_id = pinned_template_id or workflows_only_template_id or WORKFLOWS_TEMPLATE_ID_MAP.get(template_name)
     if not template_id or not settings.POSTHOG_TRANSACTIONAL_EMAIL_API_KEY:
         return None
     if not settings.POSTHOG_HOST.startswith("https://") and not settings.DEBUG:
         # The request carries the secret key and the email's contents, such as a password reset link.
         logger.warning("email_workflows_insecure_host", template_name=template_name)
         return None
-    if pinned_template_id:
-        return pinned_template_id
+    if pinned_template_id or workflows_only_template_id:
+        return template_id
     person_properties = {"email": dest["raw_email"], "transactional_email_template": template_name}
     if region := get_instance_region():
         person_properties["region"] = region
@@ -560,6 +566,8 @@ def _send_one(
             if pinned_template_id or not _workflows_queued_nothing(err):
                 _pin_to_workflows(idempotency_key, workflows_template_id)
             raise
+    if template_name in WORKFLOWS_ONLY_TEMPLATE_ID_MAP:
+        raise exceptions.ImproperlyConfigured(f"Workflows email delivery is not configured for {template_name}")
     return "customer_io", _send_one_via_customer_io(dest, template_name, properties)
 
 

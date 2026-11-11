@@ -29,6 +29,7 @@ from prometheus_client import REGISTRY
 from posthog.email import (
     CUSTOMER_IO_TEMPLATE_ID_MAP,
     HTTP_SEND_RETRY_COUNTDOWNS_SECONDS,
+    WORKFLOWS_ONLY_TEMPLATE_ID_MAP,
     WORKFLOWS_TEMPLATE_ID_MAP,
     EmailMessage,
     WorkflowsEmailError,
@@ -504,6 +505,41 @@ class TestEmail(BaseTest):
         if region:
             expected["region"] = region
         self.assertEqual(mock_feature_enabled.call_args.kwargs["person_properties"], expected)
+
+    @parameterized.expand([("us", "US"), ("eu", "EU")])
+    @patch("posthog.email.posthoganalytics.feature_enabled", return_value=False)
+    @patch("posthog.email.requests.post")
+    def test_personal_key_notification_uses_workflows_without_migration_flag(
+        self, _name: str, region: str, mock_post: MagicMock, _mock_flag: MagicMock
+    ) -> None:
+        mock_post.return_value = MagicMock(status_code=202)
+        mock_post.return_value.json.return_value = {"message_id": "key-notification"}
+        change = {"label": "Example key", "mask_value": "phx_...aaaa", "outcome": "rolled"}
+        with self.settings(
+            CLOUD_DEPLOYMENT=region,
+            CUSTOMER_IO_API_KEY="cio-key",
+            POSTHOG_TRANSACTIONAL_EMAIL_API_KEY="phs_test",
+            POSTHOG_HOST="https://us.posthog.com",
+        ):
+            message = EmailMessage(
+                campaign_key="personal_key_notification",
+                template_name="personal_api_key_changed_by_org_admin",
+                subject="Your personal API key was rolled",
+                template_context={"organization_name": "Example organization", "changes": [change]},
+                use_http=True,
+            )
+            message.add_recipient("owner@example.com", distinct_id="owner-1")
+            message.send(send_async=False, retry=False)
+
+        request = mock_post.call_args
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(
+            request.args[0],
+            "https://us.posthog.com/api/projects/@current/messaging_templates/01a1cc79-d82c-0000-732e-c847b629727e/send/",
+        )
+        self.assertEqual(request.kwargs["json"]["to"], "owner@example.com")
+        self.assertEqual(request.kwargs["json"]["message_data"]["changes"], [change])
+        self.assertIsNotNone(MessagingRecord.objects.get(campaign_key="personal_key_notification").sent_at)
 
     @parameterized.expand(
         [
@@ -1218,14 +1254,7 @@ class TestEmail(BaseTest):
             # Raw email should remain unchanged
             self.assertEqual(message.to[0]["raw_email"], "test@example.com")
 
-    def test_all_http_templates_are_registered_in_customer_io_map(self) -> None:
-        # Every EmailMessage(use_http=True, template_name="X", ...) call in
-        # production code under posthog/ needs "X" in CUSTOMER_IO_TEMPLATE_ID_MAP.
-        # The Customer.io HTTP sender raises "Unknown template name" if it
-        # isn't, and the Celery task wrapper swallows the exception via
-        # capture_exception. Without this test, a new transactional email
-        # added with a forgotten map entry sends zero emails and surfaces
-        # nothing user-visible.
+    def test_all_http_templates_are_registered_with_a_provider(self) -> None:
         import ast
         from pathlib import Path
 
@@ -1255,20 +1284,21 @@ class TestEmail(BaseTest):
                     continue
                 template_name = kwargs.get("template_name")
                 if isinstance(template_name, ast.Constant) and isinstance(template_name.value, str):
-                    if template_name.value not in CUSTOMER_IO_TEMPLATE_ID_MAP:
+                    if template_name.value not in CUSTOMER_IO_TEMPLATE_ID_MAP | WORKFLOWS_ONLY_TEMPLATE_ID_MAP:
                         missing.setdefault(template_name.value, str(source_path.relative_to(posthog_root.parent)))
 
         self.assertEqual(
             missing,
             {},
             "These template_name values use use_http=True in production code but are missing "
-            "from CUSTOMER_IO_TEMPLATE_ID_MAP in posthog/email.py. Add a map entry pointing to "
-            "the Customer.io transactional message ID, otherwise the sender will raise "
+            "from CUSTOMER_IO_TEMPLATE_ID_MAP and WORKFLOWS_ONLY_TEMPLATE_ID_MAP in posthog/email.py. "
+            "Add a provider template ID, otherwise the sender will raise "
             "'Unknown template name' at runtime and capture_exception will swallow it.",
         )
 
         # A Workflows key that names no template would never match a send, so that template stays on Customer.io.
         self.assertEqual(set(WORKFLOWS_TEMPLATE_ID_MAP) - set(CUSTOMER_IO_TEMPLATE_ID_MAP), set())
+        self.assertFalse(set(WORKFLOWS_ONLY_TEMPLATE_ID_MAP) & set(CUSTOMER_IO_TEMPLATE_ID_MAP))
 
 
 class TestMessagingHashSalt(BaseTest):

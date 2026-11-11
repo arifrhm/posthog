@@ -406,6 +406,5 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         mock_delay.assert_called_once_with(
             user_id=owner.id,
             organization_id=str(self.organization.id),
-            acting_user_email=self.user.email,
             changes=[{"label": "ci-key", "mask_value": key.mask_value, "outcome": expected_outcome}],
         )

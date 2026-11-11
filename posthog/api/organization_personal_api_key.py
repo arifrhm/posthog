@@ -223,14 +223,12 @@ class OrganizationPersonalAPIKeyViewSet(
                 {"label": result.label, "mask_value": result.mask_value, "outcome": str(result.outcome)}
             )
         organization_id = str(self.organization.id)
-        acting_user_email = cast(User, self.request.user).email
         for owner_id, changes in changes_by_owner.items():
             transaction.on_commit(
                 partial(
                     send_personal_api_keys_changed_by_org_admin.delay,
                     user_id=owner_id,
                     organization_id=organization_id,
-                    acting_user_email=acting_user_email,
                     changes=changes,
                 )
             )

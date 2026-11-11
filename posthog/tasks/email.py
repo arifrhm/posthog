@@ -2571,7 +2571,7 @@ def send_personal_api_key_exposed(user_id: int, personal_api_key_id: str, old_ma
 @shared_task(**EMAIL_TASK_KWARGS)
 @skip_team_scope_audit
 def send_personal_api_keys_changed_by_org_admin(
-    user_id: int, organization_id: str, acting_user_email: str, changes: list[dict[str, str]]
+    user_id: int, organization_id: str, changes: list[dict[str, str]]
 ) -> None:
     if not is_email_available(with_absolute_urls=True):
         return
@@ -2593,21 +2593,28 @@ def send_personal_api_keys_changed_by_org_admin(
     )
     # The SMTP template autoescapes HTML but does not defang domains like the HTTP transport does.
     organization_name = html.unescape(sanitize_email_string(organization_name))
-    one_change = len(changes) == 1
-    keys_noun = "personal API key" if one_change else "personal API keys"
-    subject = f"An admin of {organization_name} changed your {keys_noun}"
+    rolled_keys = [change for change in changes if change["outcome"] == "rolled"]
+    revoked_keys = [change for change in changes if change["outcome"] == "deleted"]
+    if rolled_keys and not revoked_keys:
+        heading = "Your personal API key was rolled" if len(rolled_keys) == 1 else "Your personal API keys were rolled"
+    elif revoked_keys and not rolled_keys:
+        heading = (
+            "Your personal API key was revoked" if len(revoked_keys) == 1 else "Your personal API keys were revoked"
+        )
+    else:
+        heading = "Your personal API keys changed"
     message = EmailMessage(
         use_http=True,
         campaign_key=f"personal-api-keys-changed-by-org-admin-{user.uuid}-{timezone.now().timestamp()}",
-        subject=subject,
+        subject=heading,
         template_name="personal_api_key_changed_by_org_admin",
         template_context={
-            "preheader": subject,
-            "heading": f"An admin changed your {keys_noun}",
-            "changes_intro": f"made {'this change' if one_change else 'these changes'} to your {keys_noun}",
+            "preheader": "Review the changes and how to reconnect your integrations.",
+            "heading": heading,
             "organization_name": organization_name,
-            "acting_user_email": acting_user_email,
             "changes": changes,
+            "rolled_keys": rolled_keys,
+            "revoked_keys": revoked_keys,
             "url": f"{settings.SITE_URL}/settings/user-api-keys",
         },
     )
