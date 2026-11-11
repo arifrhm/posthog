@@ -1,3 +1,4 @@
+import { act, fireEvent, waitFor } from '@testing-library/react'
 import { expectLogic } from 'kea-test-utils'
 import posthog from 'posthog-js'
 
@@ -6,6 +7,7 @@ import { lemonToast } from 'lib/lemon-ui/LemonToast/LemonToast'
 import { useMocks } from '~/mocks/jest'
 import { initKeaTests } from '~/test/init'
 
+import { openRevokeKeyDialog, openRollKeyDialog } from './organizationPersonalAPIKeyDialogs'
 import { organizationPersonalAPIKeysLogic } from './organizationPersonalAPIKeysLogic'
 
 const MOCK_KEYS = [
@@ -61,6 +63,32 @@ describe('organizationPersonalAPIKeysLogic', () => {
         await expectLogic(logic).toDispatchActions(['loadKeysSuccess'])
         const views = capture.mock.calls.filter(([event]) => event === 'organization personal api keys viewed')
         expect(views).toEqual([['organization personal api keys viewed', { key_count: MOCK_KEYS.length }]])
+    })
+
+    it.each(['roll', 'revoke'] as const)('submits %s only once during dialog close', async (action) => {
+        const request = jest.fn(() => [200, { outcome: action === 'roll' ? 'rolled' : 'deleted' }])
+        useMocks({
+            post: { [`/api/organizations/:organization_id/personal_api_keys/key-ada/${action}/`]: request },
+        })
+        await expectLogic(logic).toFinishAllListeners()
+
+        act(() => {
+            const openDialog = action === 'roll' ? openRollKeyDialog : openRevokeKeyDialog
+            openDialog(logic.values.keys[0], 'Ada', () => {
+                if (action === 'roll') {
+                    logic.actions.rollKey('key-ada')
+                } else {
+                    logic.actions.revokeKey('key-ada')
+                }
+            })
+        })
+        const button = document.querySelector(`[data-attr="organization-personal-api-key-${action}-confirm"]`)!
+        fireEvent.click(button)
+        fireEvent.click(button)
+
+        await expectLogic(logic).toFinishAllListeners()
+        expect(request).toHaveBeenCalledTimes(1)
+        await waitFor(() => expect(document.body.contains(button)).toBe(false))
     })
 
     it('starts with empty array and loading state', () => {

@@ -774,13 +774,22 @@ class TestPersonalAPIKeyOrganizationAdminActionLogging(BaseTest):
 
         assert [row.organization_id for row in self._updated_rows(key)] == [self.acting_org.id]
 
-    def test_admin_action_keeps_acting_org_row_after_owner_left_it(self) -> None:
-        key = self._create_key([self.acting_org, self.other_org])
+    @parameterized.expand([(action, scoped) for action in ("roll", "revoke") for scoped in (True, False)])
+    def test_admin_action_keeps_acting_org_row_after_owner_left_it(self, action: str, scoped: bool) -> None:
+        key = self._create_key([self.acting_org, self.other_org] if scoped else [])
+        key_id = str(key.id)
         self.owner.leave(organization=self.acting_org)
 
-        self._roll_as_admin(key)
+        if action == "roll":
+            self._roll_as_admin(key)
+        else:
+            with ActingUserContext(self.admin), OrganizationAdminKeyActionContext(str(self.acting_org.id)):
+                key.delete()
 
-        assert {(row.organization_id, row.user) for row in self._updated_rows(key)} == {
+        rows = ActivityLog.objects.filter(
+            scope="PersonalAPIKey", item_id=key_id, activity="updated" if action == "roll" else "deleted"
+        )
+        assert {(row.organization_id, row.user) for row in rows} == {
             (self.acting_org.id, self.admin),
             (self.other_org.id, None),
         }
