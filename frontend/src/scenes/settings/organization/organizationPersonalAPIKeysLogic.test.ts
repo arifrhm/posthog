@@ -1,5 +1,6 @@
 import { MOCK_DEFAULT_USER } from 'lib/api.mock'
 
+import { act, fireEvent, waitFor } from '@testing-library/react'
 import { expectLogic } from 'kea-test-utils'
 import posthog from 'posthog-js'
 
@@ -8,6 +9,12 @@ import { lemonToast } from 'lib/lemon-ui/LemonToast/LemonToast'
 import { useMocks } from '~/mocks/jest'
 import { initKeaTests } from '~/test/init'
 
+import {
+    openRevokeAllKeysDialog,
+    openRollAllKeysDialog,
+    openRevokeKeyDialog,
+    openRollKeyDialog,
+} from './organizationPersonalAPIKeyDialogs'
 import { organizationPersonalAPIKeysLogic } from './organizationPersonalAPIKeysLogic'
 
 const MOCK_KEYS = [
@@ -74,6 +81,63 @@ describe('organizationPersonalAPIKeysLogic', () => {
         const views = capture.mock.calls.filter(([event]) => event === 'organization personal api keys viewed')
         expect(views).toEqual([['organization personal api keys viewed', { key_count: MOCK_KEYS.length }]])
     })
+
+    it.each(['roll', 'revoke', 'roll_all', 'revoke_all'] as const)(
+        'submits %s only once during dialog close',
+        async (action) => {
+            const bulk = action.endsWith('_all')
+            const roll = action.startsWith('roll')
+            const request = jest.fn(() => [
+                200,
+                bulk ? { rolled: roll ? 2 : 0, deleted: roll ? 0 : 2 } : { outcome: roll ? 'rolled' : 'deleted' },
+            ])
+            useMocks({
+                post: {
+                    [`/api/organizations/:organization_id/personal_api_keys/${bulk ? '' : 'key-ada/'}${action}/`]:
+                        request,
+                },
+            })
+            await expectLogic(logic).toFinishAllListeners()
+
+            act(() => {
+                if (bulk) {
+                    const openDialog = roll ? openRollAllKeysDialog : openRevokeAllKeysDialog
+                    openDialog(logic.values.bulkSummary, '', () => {
+                        if (roll) {
+                            logic.actions.rollAllKeys()
+                        } else {
+                            logic.actions.revokeAllKeys()
+                        }
+                    })
+                } else {
+                    const openDialog = roll ? openRollKeyDialog : openRevokeKeyDialog
+                    openDialog(logic.values.keys[0], 'Ada', () => {
+                        if (roll) {
+                            logic.actions.rollKey('key-ada')
+                        } else {
+                            logic.actions.revokeKey('key-ada')
+                        }
+                    })
+                }
+            })
+            if (bulk) {
+                fireEvent.change(document.querySelector('input')!, {
+                    target: { value: `${roll ? 'roll' : 'revoke'} all keys` },
+                })
+            }
+            const button = document.querySelector(
+                bulk ? 'button[type="submit"]' : `[data-attr="organization-personal-api-key-${action}-confirm"]`
+            )!
+            await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false))
+            fireEvent.click(button)
+            fireEvent.click(button)
+
+            await waitFor(() => expect(request).toHaveBeenCalled())
+            await expectLogic(logic).toFinishAllListeners()
+            expect(request).toHaveBeenCalledTimes(1)
+            await waitFor(() => expect(document.body.contains(button)).toBe(false))
+        }
+    )
 
     it('starts with empty array and loading state', () => {
         expect(logic.values.keys).toEqual([])

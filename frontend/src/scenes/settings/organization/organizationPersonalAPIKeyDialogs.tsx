@@ -14,6 +14,17 @@ const ROLL_ALL_PHRASE = 'roll all keys'
 const REVOKE_ALL_PHRASE = 'revoke all keys'
 const NONE_IN_OTHER_ORGANIZATIONS = 'None of these keys work in other organizations.'
 
+function confirmOnce(onConfirm: () => void): () => void {
+    let confirmed = false
+    return () => {
+        if (!confirmed) {
+            // The button remains mounted during the dialog's close animation.
+            confirmed = true
+            onConfirm()
+        }
+    }
+}
+
 function captureDialogOpened(action: KeyAction, target: KeyActionTarget): void {
     posthog.capture('organization personal api key action dialog opened', { action, target })
 }
@@ -50,7 +61,7 @@ export function openRollKeyDialog(key: OrganizationPersonalAPIKeyApi, owner: str
         primaryButton: {
             children: 'Roll key',
             status: 'danger',
-            onClick: onConfirm,
+            onClick: confirmOnce(onConfirm),
             'data-attr': 'organization-personal-api-key-roll-confirm',
         },
         secondaryButton: { children: 'Cancel' },
@@ -77,7 +88,7 @@ export function openRevokeKeyDialog(key: OrganizationPersonalAPIKeyApi, owner: s
         primaryButton: {
             children: 'Revoke key',
             status: 'danger',
-            onClick: onConfirm,
+            onClick: confirmOnce(onConfirm),
             'data-attr': 'organization-personal-api-key-revoke-confirm',
         },
         secondaryButton: { children: 'Cancel' },
@@ -130,7 +141,7 @@ function openBulkKeyActionDialog({
                 matchesConfirmationText(value ?? '', phrase) ? undefined : 'The text does not match.',
         },
         primaryButtonProps: { status: 'danger', children: submitLabel },
-        onSubmit: onConfirm,
+        onSubmit: confirmOnce(onConfirm),
     })
 }
 

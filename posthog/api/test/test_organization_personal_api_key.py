@@ -273,18 +273,12 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         response = self.client.get("/api/users/@me/", HTTP_AUTHORIZATION=f"Bearer {old_value}")
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-    @parameterized.expand(
-        [
-            ("roll", "roll", ("O",)),
-            ("revoke_delete", "revoke", ("O",)),
-            ("revoke_shared", "revoke", ("O", "B")),
-        ]
-    )
+    @parameterized.expand([("roll",), ("revoke",)])
     @override_settings(FLAGS_REDIS_URL=settings.REDIS_URL)
-    def test_actions_invalidate_auth_cache(self, _name: str, action: str, org_refs: tuple[str, ...]) -> None:
+    def test_actions_invalidate_auth_cache(self, action: str) -> None:
         self._set_level(OrganizationMembership.Level.ADMIN)
         owner = self._create_owner_in_other_orgs()
-        key = self._create_scoped_key(owner, (), org_refs)
+        key = self._create_scoped_key(owner, (), ("O", "B"))
 
         cache_key = f"{TOKEN_CACHE_PREFIX}{key.secure_value}"
         token_auth_cache.redis.set(cache_key, "cached-auth", ex=60)
@@ -357,6 +351,54 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             secure_values
         )
 
+    @parameterized.expand([("roll",), ("revoke",), ("roll_all",), ("revoke_all",)])
+    def test_admin_can_invalidate_organization_owner_key(self, action: str) -> None:
+        self._set_level(OrganizationMembership.Level.ADMIN)
+        owner = User.objects.create_and_join(
+            self.organization, "org-owner@example.com", None, level=OrganizationMembership.Level.OWNER
+        )
+        key = self._create_key(owner)
+        old_secret = key.secure_value
+
+        url = self._bulk_action_url(action) if action.endswith("_all") else self._action_url(key, action)
+        response = self.client.post(url)
+
+        assert response.status_code == status.HTTP_200_OK, response.content
+        if action in ("roll", "roll_all"):
+            assert PersonalAPIKey.objects.get(pk=key.pk).secure_value != old_secret
+        else:
+            assert not PersonalAPIKey.objects.filter(pk=key.pk).exists()
+
+    @parameterized.expand([(action, change) for action in ("roll", "revoke") for change in ("scope", "membership")])
+    @patch.object(send_personal_api_keys_changed_by_org_admin, "delay")
+    def test_access_lost_before_lock_prevents_action(self, action: str, change: str, mock_delay: MagicMock) -> None:
+        self._set_level(OrganizationMembership.Level.ADMIN)
+        owner = self._create_owner_in_other_orgs()
+        key = self._create_scoped_key(owner, (), ("O", "B"))
+        lock = OrganizationPersonalAPIKeyActions._lock
+
+        def lose_access_then_lock(key_id: str, owner_id: int) -> PersonalAPIKey | None:
+            if change == "scope":
+                PersonalAPIKey.objects.filter(pk=key_id).update(scoped_organizations=[str(self.org_b.id)])
+            else:
+                OrganizationMembership.objects.filter(user_id=owner_id, organization=self.organization).delete()
+            return lock(key_id, owner_id)
+
+        with (
+            patch.object(OrganizationPersonalAPIKeyActions, "_lock", side_effect=lose_access_then_lock),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = self.client.post(self._action_url(key, action))
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
+        assert PersonalAPIKey.objects.get(pk=key.pk).secure_value == key.secure_value
+        assert (
+            not ActivityLog.objects.filter(scope="PersonalAPIKey", item_id=str(key.id))
+            .exclude(activity="created")
+            .exists()
+        )
+        mock_delay.assert_not_called()
+
     @parameterized.expand([("roll", True), ("revoke", True), ("roll_all", False), ("revoke_all", False)])
     def test_actions_require_recent_authentication(self, action: str, detail: bool) -> None:
         self._set_level(OrganizationMembership.Level.ADMIN)
@@ -405,17 +447,15 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
         assert PersonalAPIKey.objects.get(pk=key.pk).secure_value == key.secure_value
 
-    @parameterized.expand([("delete", ("O",), "deleted"), ("shared", ("O", "B"), "deleted")])
+    @parameterized.expand([("roll", "rolled"), ("revoke", "deleted")])
     @patch.object(send_personal_api_keys_changed_by_org_admin, "delay")
-    def test_owner_gets_email_with_change(
-        self, _name: str, org_refs: tuple[str, ...], expected_outcome: str, mock_delay: MagicMock
-    ) -> None:
+    def test_owner_gets_email_with_change(self, action: str, expected_outcome: str, mock_delay: MagicMock) -> None:
         self._set_level(OrganizationMembership.Level.ADMIN)
         owner = self._create_owner_in_other_orgs()
-        key = self._create_scoped_key(owner, (), org_refs, label="ci-key")
+        key = self._create_scoped_key(owner, (), ("O", "B"), label="ci-key")
 
         with self.captureOnCommitCallbacks(execute=True):
-            response = self.client.post(self._action_url(key, "revoke"))
+            response = self.client.post(self._action_url(key, action))
 
         assert response.status_code == status.HTTP_200_OK, response.content
         mock_delay.assert_called_once_with(

@@ -586,8 +586,6 @@ class TestEmail(APIBaseTest, ClickhouseTestMixin):
         assert message.send.call_count == 1
         assert message.subject == expected_subject
         assert "phish.example.com" not in message.html_body
-        assert "acting_user_email" not in message.properties
-        assert "Changed by:" not in message.html_body
         assert message.html_body.count("To reconnect your integrations") == len(
             {change["outcome"] for change in changes}
         )

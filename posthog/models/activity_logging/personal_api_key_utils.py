@@ -330,6 +330,11 @@ def log_personal_api_key_activity(api_key: PersonalAPIKey, activity: str, user, 
         acting_organization_id,
     )
 
+    if acting_organization_id is not None and not any(
+        _canonical_organization_id(location.org_id) == acting_organization_id for location in access_locations
+    ):
+        access_locations.append(LogScope(acting_organization_id, None))
+
     log_entries: list[LogActivityEntry] = []
     for location in access_locations:
         external_actor = _acted_from_outside(location.org_id, acting_organization_id)
