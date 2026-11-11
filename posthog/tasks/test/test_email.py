@@ -50,6 +50,7 @@ from posthog.tasks.email import (
     send_member_join,
     send_new_ticket_notification,
     send_password_reset,
+    send_personal_api_keys_changed_by_org_admin,
     send_posthog_ai_access_request,
     send_project_secret_api_key_exposed,
     send_provisioning_welcome,
@@ -501,6 +502,57 @@ class TestEmail(APIBaseTest, ClickhouseTestMixin):
         assert len(mocked_email_messages) == 1
         assert mocked_email_messages[0].send.call_count == 1
         assert mocked_email_messages[0].html_body
+
+    @parameterized.expand(
+        [
+            (
+                "one_change",
+                [{"label": "rolled-key", "mask_value": "phx_...aaaa", "outcome": "rolled"}],
+                "An admin of your organization changed your personal API key",
+                ["made this change to your personal API key:", "Roll the key again in your settings"],
+            ),
+            (
+                "several_changes",
+                [
+                    {"label": "rolled-key", "mask_value": "phx_...aaaa", "outcome": "rolled"},
+                    {"label": "deleted-key", "mask_value": "phx_...bbbb", "outcome": "deleted"},
+                    {"label": "detached-key", "mask_value": "phx_...cccc", "outcome": "access_removed"},
+                ],
+                "An admin of your organization changed your personal API keys",
+                [
+                    "made these changes to your personal API keys:",
+                    "Roll the key again in your settings",
+                    "The admin deleted this key",
+                    "The admin removed this key's access to your organization and rolled the key, so its old value "
+                    "no longer works in any organization.",
+                    "The key keeps its access to your other organizations.",
+                ],
+            ),
+        ]
+    )
+    def test_send_personal_api_keys_changed_by_org_admin(
+        self,
+        MockEmailMessage: MagicMock,
+        _name: str,
+        changes: list[dict[str, str]],
+        expected_subject: str,
+        expected_in_body: list[str],
+    ) -> None:
+        mocked_email_messages = mock_email_messages(MockEmailMessage)
+        self.organization.name = "https://phish.example.com"
+        self.organization.save()
+
+        send_personal_api_keys_changed_by_org_admin(
+            self.user.id, str(self.organization.id), "acting-admin@example.com", changes
+        )
+
+        assert len(mocked_email_messages) == 1
+        message = mocked_email_messages[0]
+        assert message.send.call_count == 1
+        assert message.subject == expected_subject
+        assert "phish.example.com" not in message.html_body
+        for expected in ["acting-admin@example.com", "phx_...aaaa", *expected_in_body]:
+            assert expected in message.html_body, expected
 
     def test_send_provisioning_welcome(self, MockEmailMessage: MagicMock) -> None:
         mocked_email_messages = mock_email_messages(MockEmailMessage)

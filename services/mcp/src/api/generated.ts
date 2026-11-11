@@ -63225,6 +63225,20 @@ export namespace Schemas {
     }
 
     /**
+     * * `rolled` - Rolled
+     * * `deleted` - Deleted
+     * * `access_removed` - Access Removed
+     */
+    export type KeyActionOutcomeEnum = typeof KeyActionOutcomeEnum[keyof typeof KeyActionOutcomeEnum];
+
+
+    export const KeyActionOutcomeEnum = {
+      Rolled: 'rolled',
+      Deleted: 'deleted',
+      AccessRemoved: 'access_removed',
+    } as const;
+
+    /**
      * * `problem` - Problem
      * * `cause` - Cause
      * * `fix` - Fix
@@ -73537,6 +73551,8 @@ export namespace Schemas {
     }
 
     export interface OrganizationPersonalAPIKey {
+      /** Unique ID of the key. */
+      readonly id: string;
       /** The organization member who owns this key. */
       readonly owner: OrganizationPersonalAPIKeyOwner;
       /** Masked, display-safe hint of the key value (e.g. 'phx_***1234'). Not the secret. The owner sees the same masked value in their own settings, so it can be used to identify a key. */
@@ -73545,6 +73561,8 @@ export namespace Schemas {
       readonly scopes: readonly string[];
       /** Where the key's scopes apply within this organization. */
       readonly access_scope: OrganizationPersonalAPIKeyAccessScope;
+      /** Whether the key also works in at least one other organization its owner belongs to. */
+      readonly reaches_other_organizations: boolean;
       /**
          * When the key was last used to authenticate, if ever.
          * @nullable
@@ -73552,6 +73570,15 @@ export namespace Schemas {
       readonly last_used_at: string | null;
       /** When the key was created. */
       readonly created_at: string;
+    }
+
+    export interface OrganizationPersonalAPIKeyActionResult {
+      /** What happened to the key. 'rolled': the key has a new secret that nobody sees, and the old secret no longer works anywhere. 'deleted': the key no longer exists. 'access_removed': the key no longer works in this organization. It also has a new secret that nobody sees, so the old secret no longer works anywhere. It keeps its access to the owner's other organizations.
+       *
+       * * `rolled` - Rolled
+       * * `deleted` - Deleted
+       * * `access_removed` - Access Removed */
+      outcome: KeyActionOutcomeEnum;
     }
 
     export interface OrganizationRemoveBlockedMembersResponse {

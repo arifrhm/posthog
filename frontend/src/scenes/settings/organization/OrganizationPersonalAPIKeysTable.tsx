@@ -1,6 +1,7 @@
 import { useActions, useValues } from 'kea'
+import { useState } from 'react'
 
-import { LemonInput } from '@posthog/lemon-ui'
+import { LemonButton, LemonInput } from '@posthog/lemon-ui'
 
 import { TZLabel } from 'lib/components/TZLabel'
 import { LemonTable, LemonTableColumns } from 'lib/lemon-ui/LemonTable'
@@ -10,7 +11,8 @@ import { ScopeGroupSummary } from 'scenes/settings/user/scopes/ScopeGroupSummary
 
 import type { OrganizationPersonalAPIKeyApi } from 'products/platform_features/frontend/generated/api.schemas'
 
-import { organizationPersonalAPIKeysLogic } from './organizationPersonalAPIKeysLogic'
+import { openRevokeKeyDialog, openRollKeyDialog } from './organizationPersonalAPIKeyDialogs'
+import { KeyAction, organizationPersonalAPIKeysLogic } from './organizationPersonalAPIKeysLogic'
 
 function AccessScope({ accessScope }: { accessScope: OrganizationPersonalAPIKeyApi['access_scope'] }): JSX.Element {
     if (accessScope.type === 'all') {
@@ -27,9 +29,22 @@ function ownerLabel(owner: OrganizationPersonalAPIKeyApi['owner']): string {
 }
 
 export function OrganizationPersonalAPIKeysTable(): JSX.Element {
-    const { filteredKeys, keysLoading, search } = useValues(organizationPersonalAPIKeysLogic)
-    const { setSearch } = useActions(organizationPersonalAPIKeysLogic)
+    const { filteredKeys, keysLoading, search, keyActionInFlight } = useValues(organizationPersonalAPIKeysLogic)
+    const { setSearch, rollKey, revokeKey } = useActions(organizationPersonalAPIKeysLogic)
+    // The in-flight marker names the key but not the action, so this records the action to
+    // put the spinner on the right button. It never needs a reset, because a spinner also needs the marker to match.
+    const [confirmedAction, setConfirmedAction] = useState<KeyAction | null>(null)
 
+    const runAction = (action: KeyAction, dispatch: () => void): void => {
+        setConfirmedAction(action)
+        dispatch()
+    }
+    const isRunning = (target: string, action: KeyAction): boolean =>
+        keyActionInFlight === target && confirmedAction === action
+    // A finished action clears its in-flight marker before its reload of the list ends. The loading check keeps the
+    // buttons disabled on the stale list until the reload ends.
+    const actionDisabledReason =
+        keyActionInFlight !== null ? 'Wait for the current action to finish' : keysLoading ? 'Loading keys' : null
     const columns: LemonTableColumns<OrganizationPersonalAPIKeyApi> = [
         {
             title: 'Owner',
@@ -47,6 +62,49 @@ export function OrganizationPersonalAPIKeysTable(): JSX.Element {
             key: 'mask_value',
             sorter: (a, b) => a.mask_value.localeCompare(b.mask_value),
             render: (_, key) => <span className="font-mono">{key.mask_value}</span>,
+        },
+        {
+            title: 'Actions',
+            key: 'actions',
+            width: 0,
+            render: (_, key) => {
+                const rolling = isRunning(key.id, 'roll')
+                const revoking = isRunning(key.id, 'revoke')
+                return (
+                    <div className="flex gap-1">
+                        <LemonButton
+                            type="secondary"
+                            size="small"
+                            loading={rolling}
+                            disabledReason={rolling ? null : actionDisabledReason}
+                            onClick={() =>
+                                openRollKeyDialog(key, ownerLabel(key.owner), () =>
+                                    runAction('roll', () => rollKey(key.id))
+                                )
+                            }
+                            aria-label={`Roll key ${key.mask_value}`}
+                            data-attr="organization-personal-api-key-roll"
+                        >
+                            Roll
+                        </LemonButton>
+                        <LemonButton
+                            type="secondary"
+                            size="small"
+                            loading={revoking}
+                            disabledReason={revoking ? null : actionDisabledReason}
+                            onClick={() =>
+                                openRevokeKeyDialog(key, ownerLabel(key.owner), () =>
+                                    runAction('revoke', () => revokeKey(key.id))
+                                )
+                            }
+                            aria-label={`Revoke key ${key.mask_value}`}
+                            data-attr="organization-personal-api-key-revoke"
+                        >
+                            Revoke
+                        </LemonButton>
+                    </div>
+                )
+            },
         },
         {
             title: 'Scopes',
@@ -75,20 +133,20 @@ export function OrganizationPersonalAPIKeysTable(): JSX.Element {
 
     return (
         <>
-            <div className="mb-2">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
                 <LemonInput
                     type="search"
                     placeholder="Search by name, email, or scope"
                     value={search}
                     onChange={setSearch}
-                    className="max-w-80"
+                    className="grow min-w-60 max-w-80"
                 />
             </div>
             <LemonTable
                 dataSource={filteredKeys}
                 loading={keysLoading}
                 columns={columns}
-                rowKey={(key) => `${key.owner.email}-${key.mask_value}-${key.created_at}`}
+                rowKey="id"
                 pagination={{ pageSize: 25 }}
                 emptyState={
                     search.trim()
