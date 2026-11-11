@@ -408,3 +408,22 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             organization_id=str(self.organization.id),
             changes=[{"label": "ci-key", "mask_value": key.mask_value, "outcome": expected_outcome}],
         )
+
+    @parameterized.expand([("roll",), ("revoke",)])
+    @patch.object(
+        send_personal_api_keys_changed_by_org_admin, "delay", side_effect=ConnectionError("broker unavailable")
+    )
+    def test_email_dispatch_failure_preserves_successful_key_action(self, action: str, _mock_delay: MagicMock) -> None:
+        self._set_level(OrganizationMembership.Level.ADMIN)
+        key = self._create_key(User.objects.create_and_join(self.organization, "member@example.com", None))
+        old_secret = key.secure_value
+
+        with self.assertLogs(level="ERROR"), self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(self._action_url(key, action))
+
+        assert response.status_code == status.HTTP_200_OK, response.content
+        if action == "roll":
+            key.refresh_from_db()
+            assert key.secure_value != old_secret
+        else:
+            assert not PersonalAPIKey.objects.filter(pk=key.pk).exists()
