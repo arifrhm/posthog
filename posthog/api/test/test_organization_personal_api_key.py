@@ -493,7 +493,7 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             }
             for call in mock_delay.call_args_list
         }
-        common = {"organization_id": str(self.organization.id), "acting_user_email": self.user.email}
+        common = {"organization_id": str(self.organization.id)}
         assert calls_by_owner == {
             owner.id: {
                 **common,
@@ -570,7 +570,6 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         mock_delay.assert_called_once_with(
             user_id=changed_key.user_id,
             organization_id=str(self.organization.id),
-            acting_user_email=self.user.email,
             changes=[{"label": changed_key.label, "mask_value": changed_key.mask_value, "outcome": "deleted"}],
         )
         assert {name: self._key_state(key) for name, key in [("changed", changed_key), ("failed", failed_key)]} == {
