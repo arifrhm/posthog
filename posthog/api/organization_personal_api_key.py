@@ -270,5 +270,6 @@ class OrganizationPersonalAPIKeyViewSet(
                     user_id=owner_id,
                     organization_id=organization_id,
                     changes=changes,
-                )
+                ),
+                robust=True,
             )

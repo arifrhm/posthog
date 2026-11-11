@@ -576,3 +576,23 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             "changed": "deleted",
             "failed": "untouched",
         }
+
+    @parameterized.expand([("roll",), ("revoke",), ("roll_all",), ("revoke_all",)])
+    @patch.object(
+        send_personal_api_keys_changed_by_org_admin, "delay", side_effect=ConnectionError("broker unavailable")
+    )
+    def test_email_dispatch_failure_preserves_successful_key_action(self, action: str, _mock_delay: MagicMock) -> None:
+        self._set_level(OrganizationMembership.Level.ADMIN)
+        key = self._create_key(User.objects.create_and_join(self.organization, "member@example.com", None))
+        old_secret = key.secure_value
+        url = self._bulk_action_url(action) if action.endswith("_all") else self._action_url(key, action)
+
+        with self.assertLogs(level="ERROR"), self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(url)
+
+        assert response.status_code == status.HTTP_200_OK, response.content
+        if action in ("roll", "roll_all"):
+            key.refresh_from_db()
+            assert key.secure_value != old_secret
+        else:
+            assert not PersonalAPIKey.objects.filter(pk=key.pk).exists()
