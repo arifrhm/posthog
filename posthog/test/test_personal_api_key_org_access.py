@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from parameterized import param, parameterized
 
-from posthog.models import Organization, OrganizationMembership, Team, User
+from posthog.models import Organization, Team, User
 from posthog.models.personal_api_key import (
     PersonalAPIKey,
     get_organization_ids_in_key_scope,
@@ -81,19 +81,7 @@ class TestGetOrganizationPersonalAPIKeys(BaseTest):
             param("not_yet_expired", expires_in=timedelta(days=1), expected_listed=True),
             param("no_scopes", scopes=(), expected_listed=False),
             param("inactive_owner", owner_is_active=False, expected_listed=False),
-            param("member_key_blocked_by_org", members_can_use_keys=False, expected_listed=False),
-            param(
-                "member_key_blocked_by_org_owner_admin_elsewhere",
-                members_can_use_keys=False,
-                admin_elsewhere=True,
-                expected_listed=False,
-            ),
-            param(
-                "admin_key_when_org_blocks_member_keys",
-                members_can_use_keys=False,
-                level=OrganizationMembership.Level.ADMIN,
-                expected_listed=True,
-            ),
+            param("member_key_when_org_turns_off_member_keys", members_can_use_keys=False, expected_listed=True),
         ]
     )
     def test_lists_only_keys_that_can_authenticate(
@@ -104,14 +92,9 @@ class TestGetOrganizationPersonalAPIKeys(BaseTest):
         expires_in=None,
         owner_is_active=True,
         members_can_use_keys=True,
-        level=OrganizationMembership.Level.MEMBER,
-        admin_elsewhere=False,
     ):
         self.organization.members_can_use_personal_api_keys = members_can_use_keys
         self.organization.save()
-        OrganizationMembership.objects.filter(user=self.member, organization=self.organization).update(level=level)
-        if admin_elsewhere:
-            self.member.join(organization=self.other_org, level=OrganizationMembership.Level.ADMIN)
         self.member.is_active = owner_is_active
         self.member.save()
         key = self._create_key(

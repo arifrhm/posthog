@@ -28,6 +28,17 @@ SCOPED_TEAMS_ACCESS_ERROR = "You must be a member of all teams that you are scop
 SCOPE_ACCESS_ERROR = "You must be a member of all teams and organizations that you are scoping the key to."
 
 
+def _is_grantable_scope(scope: str) -> bool:
+    scope_object, _, action = scope.partition(":")
+    return scope_object in GRANTABLE_API_SCOPE_OBJECTS and action in API_SCOPE_ACTIONS
+
+
+def _drop_retired_scopes(scopes: list[str], existing_scopes: list[str] | None) -> list[str]:
+    """Drop the scopes a key already held that are no longer grantable, so retiring a scope never blocks saving a key."""
+    held = set(existing_scopes or [])
+    return [scope for scope in scopes if scope == "*" or scope not in held or _is_grantable_scope(scope)]
+
+
 def validate_personal_api_key_scopes(
     scopes: list[str],
     requesting_user: User,
@@ -41,19 +52,14 @@ def validate_personal_api_key_scopes(
                 continue
             raise serializers.ValidationError(f"Invalid scope: {scope}")
 
-        scope_parts = scope.split(":")
-        if (
-            len(scope_parts) != 2
-            or scope_parts[0] not in GRANTABLE_API_SCOPE_OBJECTS
-            or scope_parts[1] not in API_SCOPE_ACTIONS
-        ):
+        if not _is_grantable_scope(scope):
             raise serializers.ValidationError(f"Invalid scope: {scope}")
 
         if allowed_scopes is not None and scope not in allowed_scopes:
             raise serializers.ValidationError(f"Invalid scope: {scope}")
 
         # Check feature flag for llm_gateway scope - block if newly adding this scope
-        if scope_parts[0] == "llm_gateway":
+        if scope.startswith("llm_gateway:"):
             existing_has_llm_gateway = existing_scopes is not None and any(
                 s.startswith("llm_gateway:") for s in existing_scopes
             )
@@ -130,6 +136,15 @@ class PersonalAPIKeySerializer(serializers.ModelSerializer):
     scopes = serializers.ListField(child=serializers.CharField(required=True), allow_empty=False)
     scoped_teams = serializers.ListField(child=serializers.IntegerField(required=False))
     scoped_organizations = serializers.ListField(child=serializers.CharField(required=False))
+    user_distinct_id = serializers.SerializerMethodField(
+        help_text="Distinct ID of the user who owns the key, for attributing analytics to that user."
+    )
+    current_organization_id = serializers.SerializerMethodField(
+        help_text="ID of the organization the key's owner last had open in the app. Null if they have none."
+    )
+    current_team_id = serializers.SerializerMethodField(
+        help_text="ID of the project the key's owner last had open in the app. Null if they have none."
+    )
 
     class Meta:
         model = PersonalAPIKey
@@ -149,6 +164,9 @@ class PersonalAPIKeySerializer(serializers.ModelSerializer):
             "scoped_organizations",
             "last_rolled_at",
             "expires_at",
+            "user_distinct_id",
+            "current_organization_id",
+            "current_team_id",
         ]
         read_only_fields = [
             "id",
@@ -160,7 +178,30 @@ class PersonalAPIKeySerializer(serializers.ModelSerializer):
             "last_used_at",
             "user_id",
             "last_rolled_at",
+            "user_distinct_id",
+            "current_organization_id",
+            "current_team_id",
         ]
+
+    def _owner(self, obj: PersonalAPIKey) -> User:
+        request = self.context.get("request")
+        if request is not None and request.user.id == obj.user_id:
+            return request.user
+        return obj.user
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_user_distinct_id(self, obj: PersonalAPIKey) -> str | None:
+        return self._owner(obj).distinct_id
+
+    @extend_schema_field(serializers.UUIDField(allow_null=True))
+    def get_current_organization_id(self, obj: PersonalAPIKey) -> str | None:
+        organization = self._owner(obj).organization
+        return str(organization.id) if organization else None
+
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
+    def get_current_team_id(self, obj: PersonalAPIKey) -> int | None:
+        team = self._owner(obj).team
+        return team.id if team else None
 
     def get_key_value(self, obj: PersonalAPIKey) -> str:
         return getattr(obj, "_value", None)  # type: ignore
@@ -186,6 +227,7 @@ class PersonalAPIKeySerializer(serializers.ModelSerializer):
     def validate_scopes(self, scopes):
         requesting_user = self.context["request"].user
         existing_scopes = list(self.instance.scopes or []) if self.instance is not None else None
+        scopes = _drop_retired_scopes(scopes, existing_scopes)
         validate_personal_api_key_scopes(scopes, requesting_user, existing_scopes=existing_scopes)
 
         return scopes
