@@ -357,8 +357,8 @@ jobs:
                   } >> "$GITHUB_OUTPUT"
 
     lint:
-        # Not on master push — master coverage comes from the hourly run (see `schedule`).
-        if: needs.changes.outputs.nodejs == 'true' && github.event_name != 'push'
+        # The merge queue already checks formatting, lint and boundaries before each commit lands.
+        if: needs.changes.outputs.nodejs == 'true' && github.event_name == 'pull_request'
         name: Node.js Code quality (depot-ubuntu-24.04)
         needs: changes
         runs-on: depot-ubuntu-24.04

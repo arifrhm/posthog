@@ -1185,6 +1185,24 @@ describe('CI workflow run plans', () => {
     })
 
     it.each([
+        ['draft PR', pullRequest({ draft: true }), true],
+        ['ready PR', pullRequest(), true],
+        ['fork PR', pullRequest({ fork: true }), true],
+        ['merge queue', mergeQueue(), true],
+        ['master push', push(), false],
+        ['hourly schedule', schedule(), false],
+    ] as const)('Node quality checks on %s', (name, github, runs) => {
+        const wf = workflow('ci-nodejs.yml')
+        const plan = planWorkflow(wf, { name, github, steps: allFiltersChanged(wf) })
+        expect(plan.errors).toEqual([])
+        expect(plan.jobs.lint?.result).toBe(runs ? 'success' : 'skipped')
+        if (github.event_name === 'schedule') {
+            expect(plan.jobs.build?.result).toBe('success')
+            expect(plan.jobs.tests?.result).toBe('success')
+        }
+    })
+
+    it.each([
         ['Rust-only PR', pullRequest(), 'true', 'false', true, true],
         ['missing Node filter', pullRequest(), 'true', '', true, true],
         ['fork', pullRequest({ fork: true }), 'true', 'false', true, true],
