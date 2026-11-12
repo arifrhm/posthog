@@ -157,18 +157,15 @@ def get_organization_ids_in_key_scope(
 def get_organization_personal_api_keys(organization: "Organization") -> QuerySet[PersonalAPIKey]:
     """Return the personal API keys of org members that can authenticate to this organization or its projects.
 
-    The scope filters are the SQL form of `get_organization_ids_in_key_scope`. The other filters drop
-    expired keys, keys without scopes, keys of inactive users, and member keys that the organization blocks.
+    The scope filters are the SQL form of `get_organization_ids_in_key_scope`. The other filters drop expired
+    keys, keys without scopes, and keys of inactive users. Member keys stay listed when the organization turns off
+    member keys, because the feature flag definitions route in `rust/feature-flags` still accepts them.
     """
-    # organization.py imports this module, so a module-level import is circular.
-    from posthog.models.organization import OrganizationMembership
-
-    membership = Q(user__organization_membership__organization_id=organization.id)
-    if not organization.members_can_use_personal_api_keys:
-        membership &= Q(user__organization_membership__level__gte=OrganizationMembership.Level.ADMIN)
     team_ids = list(organization.teams.values_list("id", flat=True))
     return (
-        PersonalAPIKey.objects.filter(membership, user__is_active=True)
+        PersonalAPIKey.objects.filter(
+            user__organization_membership__organization_id=organization.id, user__is_active=True
+        )
         .filter(Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()))
         .exclude(scopes=[])
         .filter(
