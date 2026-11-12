@@ -208,6 +208,7 @@ export interface todayShellLogicValues {
     leftNavWidth: number
     mobileSidebarOpen: boolean
     onAiPage: boolean
+    onHomePage: boolean
     paneHasSidebar: boolean
     peoplePaneLinksTabs: boolean
     phoneCanGoBack: boolean
@@ -330,6 +331,7 @@ export interface todayShellLogicMeta {
         railPanes: (featureFlags: FeatureFlagsSet) => TodayRailPane[]
         peoplePaneLinksTabs: (todayRailEnabled: boolean, activePane: TodayRailPane) => boolean
         onAiPage: (location: { hash: string; pathname: string; search: string }) => boolean
+        onHomePage: (location: { hash: string; pathname: string; search: string }) => boolean
         phoneHeaderHidden: (
             onAiPage: boolean,
             searchParams: Record<string, any>,
@@ -519,6 +521,13 @@ export const todayShellLogic = kea<todayShellLogicType>([
         onAiPage: [
             () => [router.selectors.location],
             (location: { pathname: string }): boolean => isAiPath(location.pathname),
+        ],
+        onHomePage: [
+            () => [router.selectors.location],
+            (location: { pathname: string }): boolean => {
+                const path = removeProjectIdIfPresent(location.pathname)
+                return path === '/' || path === urls.projectHomepage()
+            },
         ],
         phoneHeaderHidden: [
             (s) => [s.onAiPage, router.selectors.searchParams, s.todayRailEnabled, s.phoneLayout],
