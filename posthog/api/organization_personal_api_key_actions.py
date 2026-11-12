@@ -9,7 +9,11 @@ from posthog.enums import LabeledStrEnum
 from posthog.models import Organization, OrganizationMembership, Team, User
 from posthog.models.activity_logging.model_activity import ActingUserContext
 from posthog.models.activity_logging.personal_api_key_utils import OrganizationAdminKeyActionContext
-from posthog.models.personal_api_key import PersonalAPIKey, get_organization_personal_api_keys
+from posthog.models.personal_api_key import (
+    PersonalAPIKey,
+    get_organization_ids_in_key_scope,
+    get_organization_personal_api_keys,
+)
 
 
 @frozen
@@ -19,8 +23,8 @@ class PersonalAPIKeyOrganizationAccess:
 
 
 class PersonalAPIKeyOrganizationAccessResolver:
-    """Organization access follows `posthog/permissions.py`, which applies each non-empty `scoped_teams` and
-    `scoped_organizations` list as its own limit. An organization the owner left never counts."""
+    """A key reaches the organizations that `get_organization_ids_in_key_scope` allows and the owner is a member of.
+    An organization the owner left never counts."""
 
     def __init__(
         self, *, member_organization_ids: Mapping[int, frozenset[str]], team_organization_ids: Mapping[int, str]
@@ -54,19 +58,13 @@ class PersonalAPIKeyOrganizationAccessResolver:
         )
 
     def resolve(self, key: PersonalAPIKey, organization_id: str) -> PersonalAPIKeyOrganizationAccess:
-        live = self._member_organization_ids.get(key.user_id, frozenset())
-        team_org = self.team_organization_ids
-        teams, orgs = key.scoped_teams or [], key.scoped_organizations or []
-        if teams:
-            reachable = {
-                team_org[t]
-                for t in teams
-                if t in team_org and team_org[t] in live and (not orgs or team_org[t] in orgs)
-            }
-        elif orgs:
-            reachable = set(orgs) & live
-        else:
-            reachable = set(live)
+        member_organization_ids = self._member_organization_ids.get(key.user_id, frozenset())
+        organization_ids_in_scope = get_organization_ids_in_key_scope(key, self.team_organization_ids)
+        reachable = (
+            member_organization_ids
+            if organization_ids_in_scope is None
+            else organization_ids_in_scope & member_organization_ids
+        )
         return PersonalAPIKeyOrganizationAccess(
             has_access_to_organization=organization_id in reachable,
             other_organization_ids=frozenset(reachable - {organization_id}),
@@ -132,10 +130,10 @@ class OrganizationPersonalAPIKeyActions:
                 .has_access_to_organization
             ):
                 return None
-            result = self._result(key, KeyActionOutcome.ROLLED)
             with ActingUserContext(self._acting_user), OrganizationAdminKeyActionContext(self._organization_id):
                 PersonalAPIKeySerializer(instance=key).roll(key)
-            return result
+            # The roll sets a new mask, which is the one the owner sees in their settings.
+            return self._result(key, KeyActionOutcome.ROLLED)
 
     def revoke(self, key_id: str, owner_id: int) -> KeyActionResult | None:
         with transaction.atomic():

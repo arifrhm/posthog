@@ -543,6 +543,41 @@ class TestEmail(BaseTest):
 
     @parameterized.expand(
         [
+            ("no_workflows_key", "", "https://us.posthog.com"),
+            ("insecure_host", "phs_test", "http://posthog.example.com"),
+        ]
+    )
+    @patch("posthog.email.requests.post")
+    def test_workflows_only_template_falls_back_to_smtp_without_a_workflows_route(
+        self, _name: str, transactional_email_api_key: str, posthog_host: str, mock_post: MagicMock
+    ) -> None:
+        with (
+            override_instance_config("EMAIL_HOST", "localhost"),
+            self.settings(
+                CUSTOMER_IO_API_KEY="cio-key",
+                POSTHOG_TRANSACTIONAL_EMAIL_API_KEY=transactional_email_api_key,
+                POSTHOG_HOST=posthog_host,
+                DEBUG=False,
+            ),
+        ):
+            message = EmailMessage(
+                campaign_key="personal_key_notification_smtp",
+                template_name="personal_api_key_changed_by_org_admin",
+                subject="Your personal API key was rolled",
+                template_context={
+                    "organization_name": "Example organization",
+                    "changes": [{"label": "Example key", "mask_value": "phx_...aaaa", "outcome": "rolled"}],
+                },
+                use_http=True,
+            )
+            message.add_recipient("owner@example.com")
+            message.send(send_async=False, retry=False)
+
+        mock_post.assert_not_called()
+        self.assertEqual([email.to for email in mail.outbox], [["owner@example.com"]])
+
+    @parameterized.expand(
+        [
             ("workflows_accepts", True, [202], ["workflows"], "workflows", ["transactional email triggered"]),
             ("workflows_rejects_sends_nothing", True, [400], ["workflows"], None, ["transactional email failed"]),
             ("workflows_in_flight_sends_nothing", True, [409], ["workflows"], None, ["transactional email failed"]),
