@@ -443,10 +443,17 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             response = self.client.post(self._action_url(key, action))
 
         assert response.status_code == status.HTTP_200_OK, response.content
+        rolled_key = PersonalAPIKey.objects.filter(pk=key.pk).first()
         mock_delay.assert_called_once_with(
             user_id=owner.id,
             organization_id=str(self.organization.id),
-            changes=[{"label": "ci-key", "mask_value": key.mask_value, "outcome": expected_outcome}],
+            changes=[
+                {
+                    "label": "ci-key",
+                    "mask_value": rolled_key.mask_value if rolled_key else key.mask_value,
+                    "outcome": expected_outcome,
+                }
+            ],
         )
 
     @parameterized.expand([("roll",), ("revoke",)])

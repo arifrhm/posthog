@@ -337,6 +337,20 @@ def _never_connected(err: requests.ConnectionError) -> bool:
     return isinstance(reason, urllib3.exceptions.NewConnectionError)
 
 
+def _is_workflows_route_configured(template_name: str) -> bool:
+    if not settings.POSTHOG_TRANSACTIONAL_EMAIL_API_KEY:
+        return False
+    if not settings.POSTHOG_HOST.startswith("https://") and not settings.DEBUG:
+        # The request carries the secret key and the email's contents, such as a password reset link.
+        logger.warning("email_workflows_insecure_host", template_name=template_name)
+        return False
+    return True
+
+
+def _is_workflows_only_template_without_route(template_name: str) -> bool:
+    return template_name in WORKFLOWS_ONLY_TEMPLATE_ID_MAP and not _is_workflows_route_configured(template_name)
+
+
 def get_workflows_template_id(
     template_name: str, dest: dict[str, str], pinned_template_id: str | None = None
 ) -> str | None:
@@ -346,11 +360,7 @@ def get_workflows_template_id(
     """
     workflows_only_template_id = WORKFLOWS_ONLY_TEMPLATE_ID_MAP.get(template_name)
     template_id = pinned_template_id or workflows_only_template_id or WORKFLOWS_TEMPLATE_ID_MAP.get(template_name)
-    if not template_id or not settings.POSTHOG_TRANSACTIONAL_EMAIL_API_KEY:
-        return None
-    if not settings.POSTHOG_HOST.startswith("https://") and not settings.DEBUG:
-        # The request carries the secret key and the email's contents, such as a password reset link.
-        logger.warning("email_workflows_insecure_host", template_name=template_name)
+    if not template_id or not _is_workflows_route_configured(template_name):
         return None
     if pinned_template_id or workflows_only_template_id:
         return template_id
@@ -936,7 +946,8 @@ def _send_email_now(
     properties: Optional[dict] = None,
     retry_in_worker: bool = False,
 ) -> list[str]:
-    if use_http and is_http_email_service_available():
+    # Customer.io has no copy of a Workflows-only template, so without a Workflows route SMTP sends it.
+    if use_http and is_http_email_service_available() and not _is_workflows_only_template_without_route(template_name):
         try:
             return _send_via_http(
                 to=to,

@@ -60,17 +60,17 @@ export function openRevokeKeyDialog(key: OrganizationPersonalAPIKeyApi, owner: s
     captureDialogOpened('revoke', 'single')
     LemonDialog.open({
         maxWidth: 480,
-        title: 'Revoke personal API key?',
+        title: 'Revoke this personal API key?',
         description: (
             <>
                 <p>
-                    {keyName(key, owner)} will be permanently deleted. Anything that uses it stops working until the
-                    owner creates a new key.
+                    <strong>{owner}</strong>'s key <span className="font-mono">{key.mask_value}</span> will be deleted.
+                    Any integration or script that uses it will stop working right away. You can't undo this.
                 </p>
                 {key.reaches_other_organizations ? (
-                    <p>This key also works in other organizations. Revoking it stops it working there too.</p>
+                    <p>The key also works in other organizations {owner} belongs to. It will stop working there too.</p>
                 ) : null}
-                <p>The owner gets an email about this change.</p>
+                <p>We'll email {owner} about this change.</p>
             </>
         ),
         primaryButton: {
