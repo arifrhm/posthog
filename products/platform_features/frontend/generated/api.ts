@@ -34,6 +34,7 @@ import type {
     OrganizationMemberGithubLoginApi,
     OrganizationPersonalAPIKeyActionResultApi,
     OrganizationPersonalAPIKeyBulkActionResultApi,
+    OrganizationPersonalAPIKeyRollAllRequestApi,
     OrganizationRemoveBlockedMembersResponseApi,
     PaginatedActivityLogListApi,
     PaginatedApprovalPolicyListApi,
@@ -448,6 +449,7 @@ export const getOrganizationPersonalApiKeysRollAllUrl = (organizationId: string)
 
 export const organizationPersonalApiKeysRollAll = async (
     organizationId: string,
+    organizationPersonalAPIKeyRollAllRequestApi?: OrganizationPersonalAPIKeyRollAllRequestApi,
     options?: RequestInit
 ): Promise<OrganizationPersonalAPIKeyBulkActionResultApi> => {
     return apiMutator<OrganizationPersonalAPIKeyBulkActionResultApi>(
@@ -455,6 +457,8 @@ export const organizationPersonalApiKeysRollAll = async (
         {
             ...options,
             method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...options?.headers },
+            body: JSON.stringify(organizationPersonalAPIKeyRollAllRequestApi),
         }
     )
 }

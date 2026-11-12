@@ -17,6 +17,8 @@ import {
 } from './organizationPersonalAPIKeyDialogs'
 import { organizationPersonalAPIKeysLogic } from './organizationPersonalAPIKeysLogic'
 
+const BULK_RESULT = { rolled: 0, deleted: 0, skipped: 0, failed: 0, started_at: '2026-03-01T14:05:00Z' }
+
 const MOCK_KEYS = [
     {
         id: 'key-ada',
@@ -89,7 +91,9 @@ describe('organizationPersonalAPIKeysLogic', () => {
             const roll = action.startsWith('roll')
             const request = jest.fn(() => [
                 200,
-                bulk ? { rolled: roll ? 2 : 0, deleted: roll ? 0 : 2 } : { outcome: roll ? 'rolled' : 'deleted' },
+                bulk
+                    ? { ...BULK_RESULT, rolled: roll ? 2 : 0, deleted: roll ? 0 : 2 }
+                    : { outcome: roll ? 'rolled' : 'deleted' },
             ])
             useMocks({
                 post: {
@@ -101,14 +105,11 @@ describe('organizationPersonalAPIKeysLogic', () => {
 
             act(() => {
                 if (bulk) {
-                    const openDialog = roll ? openRollAllKeysDialog : openRevokeAllKeysDialog
-                    openDialog(logic.values.bulkSummary, '', () => {
-                        if (roll) {
-                            logic.actions.rollAllKeys()
-                        } else {
-                            logic.actions.revokeAllKeys()
-                        }
-                    })
+                    if (roll) {
+                        openRollAllKeysDialog(logic.values.bulkSummary, '', null, () => logic.actions.rollAllKeys())
+                    } else {
+                        openRevokeAllKeysDialog(logic.values.bulkSummary, '', () => logic.actions.revokeAllKeys())
+                    }
                 } else {
                     const openDialog = roll ? openRollKeyDialog : openRevokeKeyDialog
                     openDialog(logic.values.keys[0], 'Ada', () => {
@@ -138,6 +139,57 @@ describe('organizationPersonalAPIKeysLogic', () => {
             await waitFor(() => expect(document.body.contains(button)).toBe(false))
         }
     )
+
+    it.each(['roll_all', 'revoke_all'] as const)('blocks %s while the typed phrase does not match', async (action) => {
+        const request = jest.fn(() => [200, BULK_RESULT])
+        useMocks({ post: { [`/api/organizations/:organization_id/personal_api_keys/${action}/`]: request } })
+        await expectLogic(logic).toFinishAllListeners()
+
+        act(() => {
+            if (action === 'roll_all') {
+                openRollAllKeysDialog(logic.values.bulkSummary, '', null, () => logic.actions.rollAllKeys())
+            } else {
+                openRevokeAllKeysDialog(logic.values.bulkSummary, '', () => logic.actions.revokeAllKeys())
+            }
+        })
+        fireEvent.change(document.querySelector('input')!, { target: { value: 'roll some keys' } })
+        fireEvent.click(document.querySelector('button[type="submit"]')!)
+
+        await waitFor(() => expect(document.body.textContent).toContain('The text does not match.'))
+        await expectLogic(logic).toFinishAllListeners()
+        expect(request).not.toHaveBeenCalled()
+    })
+
+    it('retries a roll of all keys without rolling the keys it already rolled', async () => {
+        const successToast = jest.spyOn(lemonToast, 'success').mockImplementation()
+        jest.spyOn(lemonToast, 'warning').mockImplementation()
+        await expectLogic(logic).toFinishAllListeners()
+        const bodies: unknown[] = []
+        const responses = [
+            { ...BULK_RESULT, rolled: 2, failed: 1 },
+            { ...BULK_RESULT, rolled: 1, skipped: 2 },
+        ]
+        useMocks({
+            post: {
+                '/api/organizations/:organization_id/personal_api_keys/roll_all/': async ({ request }) => {
+                    bodies.push(await request.json())
+                    return [200, responses[bodies.length - 1]]
+                },
+            },
+        })
+
+        logic.actions.rollAllKeys()
+        await expectLogic(logic)
+            .toDispatchActions(['keyActionSuccess'])
+            .toMatchValues({ rollAllRetrySince: BULK_RESULT.started_at })
+        logic.actions.rollAllKeys()
+        await expectLogic(logic).toDispatchActions(['keyActionSuccess']).toMatchValues({ rollAllRetrySince: null })
+
+        expect(bodies).toEqual([{ skip_rolled_since: null }, { skip_rolled_since: BULK_RESULT.started_at }])
+        expect(successToast.mock.calls[0][0]).toMatch(
+            /^Rolled 1\skey\. Skipped 2\skeys rolled since your first attempt at .+, so their new secrets keep working\.$/
+        )
+    })
 
     it('starts with empty array and loading state', () => {
         expect(logic.values.keys).toEqual([])
@@ -177,12 +229,12 @@ describe('organizationPersonalAPIKeysLogic', () => {
             run: () => logic.actions.rollAllKeys(),
             inFlight: 'all',
             path: '/api/organizations/:organization_id/personal_api_keys/roll_all/',
-            response: [200, { rolled: 3, deleted: 0 }],
+            response: [200, { ...BULK_RESULT, rolled: 3 }],
             finish: 'keyActionSuccess',
             toast: { kind: 'success', text: /^Rolled 3\skeys$/ },
             event: [
                 'organization personal api key action completed',
-                { action: 'roll', target: 'all', rolled: 3, deleted: 0 },
+                { action: 'roll', target: 'all', rolled: 3, deleted: 0, skipped: 0, failed: 0 },
             ],
         },
         {
@@ -190,12 +242,25 @@ describe('organizationPersonalAPIKeysLogic', () => {
             run: () => logic.actions.revokeAllKeys(),
             inFlight: 'all',
             path: '/api/organizations/:organization_id/personal_api_keys/revoke_all/',
-            response: [200, { rolled: 0, deleted: 3 }],
+            response: [200, { ...BULK_RESULT, deleted: 3 }],
             finish: 'keyActionSuccess',
             toast: { kind: 'success', text: /^Revoked 3\skeys$/ },
             event: [
                 'organization personal api key action completed',
-                { action: 'revoke', target: 'all', rolled: 0, deleted: 3 },
+                { action: 'revoke', target: 'all', rolled: 0, deleted: 3, skipped: 0, failed: 0 },
+            ],
+        },
+        {
+            name: 'roll all keys that leaves some keys unchanged',
+            run: () => logic.actions.rollAllKeys(),
+            inFlight: 'all',
+            path: '/api/organizations/:organization_id/personal_api_keys/roll_all/',
+            response: [200, { ...BULK_RESULT, rolled: 2, failed: 1 }],
+            finish: 'keyActionSuccess',
+            toast: { kind: 'warning', text: /^Rolled 2\skeys\. Couldn't change 1\skey\. Try again to change it\.$/ },
+            event: [
+                'organization personal api key action completed',
+                { action: 'roll', target: 'all', rolled: 2, deleted: 0, skipped: 0, failed: 1 },
             ],
         },
         {
@@ -231,7 +296,7 @@ describe('organizationPersonalAPIKeysLogic', () => {
             toast: { kind: 'success', text: /^Rolled 1\skey$/ },
             event: [
                 'organization personal api key action completed',
-                { action: 'roll', target: 'single', rolled: 1, deleted: 0 },
+                { action: 'roll', target: 'single', rolled: 1, deleted: 0, skipped: 0, failed: 0 },
             ],
         },
         {
@@ -244,7 +309,7 @@ describe('organizationPersonalAPIKeysLogic', () => {
             toast: { kind: 'success', text: /^Revoked 1\skey$/ },
             event: [
                 'organization personal api key action completed',
-                { action: 'revoke', target: 'single', rolled: 0, deleted: 1 },
+                { action: 'revoke', target: 'single', rolled: 0, deleted: 1, skipped: 0, failed: 0 },
             ],
         },
         {
@@ -263,7 +328,7 @@ describe('organizationPersonalAPIKeysLogic', () => {
     ])(
         'marks the action in flight and reloads after it: $name',
         async ({ run, inFlight, path, response, finish, toast, event }) => {
-            const toastSpy = jest.spyOn(lemonToast, toast.kind as 'success' | 'error').mockImplementation()
+            const toastSpy = jest.spyOn(lemonToast, toast.kind as 'success' | 'warning' | 'error').mockImplementation()
             const capture = jest.spyOn(posthog, 'capture').mockImplementation()
             await expectLogic(logic).toFinishAllListeners()
 

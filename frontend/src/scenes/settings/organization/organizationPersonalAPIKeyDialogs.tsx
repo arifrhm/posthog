@@ -8,7 +8,12 @@ import { pluralize } from 'lib/utils/strings'
 
 import type { OrganizationPersonalAPIKeyApi } from 'products/platform_features/frontend/generated/api.schemas'
 
-import type { BulkKeySummary, KeyAction, KeyActionTarget } from './organizationPersonalAPIKeysLogic'
+import {
+    type BulkKeySummary,
+    type KeyAction,
+    type KeyActionTarget,
+    formatRetryStart,
+} from './organizationPersonalAPIKeysLogic'
 
 const ROLL_ALL_PHRASE = 'roll all keys'
 const REVOKE_ALL_PHRASE = 'revoke all keys'
@@ -100,6 +105,7 @@ interface BulkDialogOptions {
     title: string
     description: string
     counts: string[]
+    footer?: string
     phrase: string
     confirmationDataAttr: string
     submitLabel: string
@@ -111,6 +117,7 @@ function openBulkKeyActionDialog({
     title,
     description,
     counts,
+    footer,
     phrase,
     confirmationDataAttr,
     submitLabel,
@@ -131,6 +138,7 @@ function openBulkKeyActionDialog({
                         <li key={line}>{line}</li>
                     ))}
                 </ul>
+                {footer ? <p>{footer}</p> : null}
                 <LemonField name="confirmation" label={typeToConfirm}>
                     <LemonInput autoFocus data-attr={confirmationDataAttr} />
                 </LemonField>
@@ -158,6 +166,7 @@ function ownedByMeLine(ownedByMe: number): string {
 export function openRollAllKeysDialog(
     { total, alsoInOtherOrganizations, ownedByMe }: BulkKeySummary,
     search: string,
+    retrySince: string | null,
     onConfirm: () => void
 ): void {
     openBulkKeyActionDialog({
@@ -167,6 +176,11 @@ export function openRollAllKeysDialog(
             'Every personal API key with access to this organization gets a new secret that is not shown to anyone. Each key keeps its scopes and settings, but stops working until its owner rolls it again in their own settings. Each owner gets an email about this change.',
         counts: [
             `This rolls ${pluralize(total, 'key')}.`,
+            ...(retrySince
+                ? [
+                      `Keys rolled since your first attempt at ${formatRetryStart(retrySince)} will be skipped, so their new secrets keep working.`,
+                  ]
+                : []),
             ...searchIgnoredLines(search),
             alsoInOtherOrganizations
                 ? `${pluralize(alsoInOtherOrganizations, 'key')} also ${agree(alsoInOtherOrganizations, 'works', 'work')} in other organizations and ${agree(alsoInOtherOrganizations, 'stops', 'stop')} working there too.`
@@ -185,19 +199,21 @@ export function openRevokeAllKeysDialog(
     search: string,
     onConfirm: () => void
 ): void {
+    const keys = total === 1 ? 'the 1 personal API key' : `all ${total} personal API keys`
     openBulkKeyActionDialog({
         action: 'revoke',
         title: 'Revoke all personal API keys?',
-        description:
-            'Every personal API key with access to this organization will be permanently deleted. Integrations using these keys will stop working in all organizations. Owners must create new keys to reconnect them. Each owner gets an email about this change.',
+        description: `This deletes ${keys} that can access this organization. Integrations and scripts that use ${agree(total, 'it', 'them')} will stop working right away. You can't undo this.`,
         counts: [
-            `This revokes ${pluralize(total, 'key')}.`,
-            ...searchIgnoredLines(search),
             alsoInOtherOrganizations
                 ? `${pluralize(alsoInOtherOrganizations, 'key')} also ${agree(alsoInOtherOrganizations, 'works', 'work')} in other organizations and will stop working there too.`
                 : NONE_IN_OTHER_ORGANIZATIONS,
-            ownedByMeLine(ownedByMe),
+            ownedByMe
+                ? `${ownedByMe} of these keys ${agree(ownedByMe, 'is', 'are')} yours.`
+                : 'None of these keys are yours.',
+            ...(search.trim() ? ['This includes keys hidden by your search.'] : []),
         ],
+        footer: "We'll email each key owner. They'll need to create a new key to reconnect.",
         phrase: REVOKE_ALL_PHRASE,
         confirmationDataAttr: 'organization-personal-api-keys-revoke-all-confirmation-input',
         submitLabel: 'Revoke all keys',

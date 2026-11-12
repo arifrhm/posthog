@@ -35,7 +35,7 @@ function ownerLabel(owner: OrganizationPersonalAPIKeyApi['owner']): string {
 }
 
 export function OrganizationPersonalAPIKeysTable(): JSX.Element {
-    const { filteredKeys, keysLoading, search, keyActionInFlight, bulkSummary } = useValues(
+    const { filteredKeys, keysLoading, search, keyActionInFlight, bulkSummary, rollAllRetrySince } = useValues(
         organizationPersonalAPIKeysLogic
     )
     const { setSearch, rollKey, revokeKey, rollAllKeys, revokeAllKeys } = useActions(organizationPersonalAPIKeysLogic)
@@ -151,7 +151,11 @@ export function OrganizationPersonalAPIKeysTable(): JSX.Element {
                         type="secondary"
                         loading={isBulkRunning('roll')}
                         disabledReason={isBulkRunning('roll') ? null : bulkDisabledReason}
-                        onClick={() => openRollAllKeysDialog(bulkSummary, search, () => runBulkAction('roll', rollAllKeys))}
+                        onClick={() =>
+                            openRollAllKeysDialog(bulkSummary, search, rollAllRetrySince, () =>
+                                runBulkAction('roll', rollAllKeys)
+                            )
+                        }
                         data-attr="organization-personal-api-keys-roll-all"
                     >
                         Roll all keys

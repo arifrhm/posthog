@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import time_machine
 from posthog.test.base import APIBaseTest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from django.conf import settings
 from django.core.signing import TimestampSigner
@@ -98,10 +98,17 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         response = self.client.get(self._url())
         assert response.status_code == status.HTTP_200_OK
 
-    def test_plain_member_is_forbidden(self):
+    @parameterized.expand(
+        [("list", "get", ""), ("roll_all", "post", "roll_all/"), ("revoke_all", "post", "revoke_all/")]
+    )
+    def test_plain_member_is_forbidden(self, _name: str, method: str, path: str) -> None:
         self._set_level(OrganizationMembership.Level.MEMBER)
-        response = self.client.get(self._url())
+        key = self._create_key(self.user)
+
+        response = getattr(self.client, method)(f"{self._url()}{path}")
+
         assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert self._key_state(key) == "untouched"
 
     def test_response_never_exposes_secret_or_label(self):
         self._set_level(OrganizationMembership.Level.ADMIN)
@@ -475,7 +482,7 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         [
             (
                 "roll_all",
-                {"rolled": 4, "deleted": 0},
+                {"rolled": 4, "deleted": 0, "skipped": 0, "failed": 0},
                 {
                     "single_org": "rolled",
                     "multi_org": "rolled",
@@ -486,7 +493,7 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             ),
             (
                 "revoke_all",
-                {"rolled": 0, "deleted": 4},
+                {"rolled": 0, "deleted": 4, "skipped": 0, "failed": 0},
                 {
                     "single_org": "deleted",
                     "multi_org": "deleted",
@@ -516,8 +523,41 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         response = self.client.post(self._bulk_action_url(action))
 
         assert response.status_code == status.HTTP_200_OK, response.content
-        assert response.json() == expected_counts
+        assert response.json() == {**expected_counts, "started_at": ANY}
         assert {name: self._key_state(key) for name, key in keys.items()} == expected_states
+
+    @patch.object(send_personal_api_keys_changed_by_org_admin, "delay")
+    def test_roll_all_retry_skips_keys_rolled_since_the_first_attempt(self, mock_delay: MagicMock) -> None:
+        self._set_level(OrganizationMembership.Level.ADMIN)
+        first_attempt_started_at = timezone.now() - timedelta(minutes=5)
+        owner = User.objects.create_and_join(self.organization, "retry-owner@example.com", None)
+        keys = {
+            "rolled_after_start": self._create_key(
+                owner, last_rolled_at=first_attempt_started_at + timedelta(minutes=1)
+            ),
+            "rolled_before_start": self._create_key(
+                owner, last_rolled_at=first_attempt_started_at - timedelta(hours=1)
+            ),
+            "never_rolled": self._create_key(owner),
+        }
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                self._bulk_action_url("roll_all"),
+                {"skip_rolled_since": first_attempt_started_at.isoformat()},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_200_OK, response.content
+        body = response.json()
+        assert (body["rolled"], body["skipped"], body["failed"]) == (2, 1, 0)
+        assert datetime.fromisoformat(body["started_at"]) == first_attempt_started_at
+        assert {name: self._key_state(key) for name, key in keys.items()} == {
+            "rolled_after_start": "untouched",
+            "rolled_before_start": "rolled",
+            "never_rolled": "rolled",
+        }
+        assert len(mock_delay.call_args.kwargs["changes"]) == 2
 
     @patch.object(send_personal_api_keys_changed_by_org_admin, "delay")
     def test_bulk_action_sends_one_email_per_owner(self, mock_delay: MagicMock) -> None:
@@ -532,6 +572,9 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             response = self.client.post(self._bulk_action_url("roll_all"))
 
         assert response.status_code == status.HTTP_200_OK, response.content
+        first_key, second_key, other_key = (
+            PersonalAPIKey.objects.get(pk=key.pk) for key in (first_key, second_key, other_key)
+        )
         assert len(mock_delay.call_args_list) == 2
         calls_by_owner = {
             call.kwargs["user_id"]: {
@@ -559,8 +602,8 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
 
     @parameterized.expand(
         [
-            ("roll_all", {"rolled": 1, "deleted": 0}),
-            ("revoke_all", {"rolled": 0, "deleted": 1}),
+            ("roll_all", {"rolled": 1, "deleted": 0, "skipped": 0, "failed": 0}),
+            ("revoke_all", {"rolled": 0, "deleted": 1, "skipped": 0, "failed": 0}),
         ]
     )
     def test_bulk_action_skips_key_that_left_org(self, action: str, expected_counts: dict[str, int]) -> None:
@@ -581,7 +624,7 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
             response = self.client.post(self._bulk_action_url(action))
 
         assert response.status_code == status.HTTP_200_OK, response.content
-        assert response.json() == expected_counts
+        assert response.json() == {**expected_counts, "started_at": ANY}
         assert leaving_key.id in locked_key_ids
         after = PersonalAPIKey.objects.get(pk=leaving_key.pk)
         assert (after.secure_value, after.scoped_teams, after.scoped_organizations) == (
@@ -591,10 +634,10 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         )
 
     @patch.object(send_personal_api_keys_changed_by_org_admin, "delay")
-    def test_bulk_action_emails_owners_of_keys_changed_before_a_failure(self, mock_delay: MagicMock) -> None:
+    def test_bulk_action_continues_past_a_failing_key(self, mock_delay: MagicMock) -> None:
         self._set_level(OrganizationMembership.Level.ADMIN)
         keys = {}
-        for email in ("first-owner@example.com", "second-owner@example.com"):
+        for email in ("first-owner@example.com", "second-owner@example.com", "third-owner@example.com"):
             key = self._create_key(User.objects.create_and_join(self.organization, email, None), label=email)
             keys[key.id] = key
         real_lock = OrganizationPersonalAPIKeyActions._lock
@@ -612,17 +655,14 @@ class TestOrganizationPersonalAPIKeyAPI(APIBaseTest):
         ):
             response = self.client.post(self._bulk_action_url("revoke_all"))
 
-        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR, response.content
-        changed_key, failed_key = keys[locked_key_ids[0]], keys[locked_key_ids[1]]
-        mock_delay.assert_called_once_with(
-            user_id=changed_key.user_id,
-            organization_id=str(self.organization.id),
-            changes=[{"label": changed_key.label, "mask_value": changed_key.mask_value, "outcome": "deleted"}],
+        assert response.status_code == status.HTTP_200_OK, response.content
+        assert response.json() == {"rolled": 0, "deleted": 2, "skipped": 0, "failed": 1, "started_at": ANY}
+        changed_keys = [keys[locked_key_ids[0]], keys[locked_key_ids[2]]]
+        failed_key = keys[locked_key_ids[1]]
+        assert sorted(call.kwargs["user_id"] for call in mock_delay.call_args_list) == sorted(
+            key.user_id for key in changed_keys
         )
-        assert {name: self._key_state(key) for name, key in [("changed", changed_key), ("failed", failed_key)]} == {
-            "changed": "deleted",
-            "failed": "untouched",
-        }
+        assert [self._key_state(key) for key in [*changed_keys, failed_key]] == ["deleted", "deleted", "untouched"]
 
     @parameterized.expand([("roll",), ("revoke",), ("roll_all",), ("revoke_all",)])
     @patch.object(

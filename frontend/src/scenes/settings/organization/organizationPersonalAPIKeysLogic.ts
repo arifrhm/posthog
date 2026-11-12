@@ -3,6 +3,7 @@ import { loaders } from 'kea-loaders'
 import posthog from 'posthog-js'
 
 import api, { ApiConfig, ApiError } from 'lib/api'
+import { dayjs } from 'lib/dayjs'
 import { lemonToast } from 'lib/lemon-ui/LemonToast/LemonToast'
 import { capitalizeFirstLetter, fullName, pluralize } from 'lib/utils/strings'
 import { userLogic } from 'scenes/userLogic'
@@ -33,28 +34,63 @@ export interface BulkKeySummary {
 
 export const ALL_KEYS = 'all'
 
-function countsFromOutcome({
-    outcome,
-}: OrganizationPersonalAPIKeyActionResultApi): OrganizationPersonalAPIKeyBulkActionResultApi {
+interface KeyActionCounts {
+    rolled: number
+    deleted: number
+    skipped: number
+    failed: number
+    // The start of the first attempt, which the skipped keys were rolled after.
+    startedAt: string | null
+}
+
+export function formatRetryStart(startedAt: string): string {
+    return dayjs(startedAt).format('h:mm A')
+}
+
+function countsFromOutcome({ outcome }: OrganizationPersonalAPIKeyActionResultApi): KeyActionCounts {
     return {
         rolled: outcome === 'rolled' ? 1 : 0,
         deleted: outcome === 'deleted' ? 1 : 0,
+        skipped: 0,
+        failed: 0,
+        startedAt: null,
     }
 }
 
-function describeCounts({ rolled, deleted }: OrganizationPersonalAPIKeyBulkActionResultApi): string {
-    const parts = [
+function countsFromBulkResult(result: OrganizationPersonalAPIKeyBulkActionResultApi): KeyActionCounts {
+    const { rolled, deleted, skipped, failed, started_at } = result
+    return { rolled, deleted, skipped, failed, startedAt: started_at }
+}
+
+function describeCounts({ rolled, deleted, skipped, failed, startedAt }: KeyActionCounts): string {
+    const changes = [
         rolled ? `rolled ${pluralize(rolled, 'key')}` : null,
         deleted ? `revoked ${pluralize(deleted, 'key')}` : null,
     ].filter((part): part is string => part !== null)
-    return parts.length ? capitalizeFirstLetter(parts.join(', ')) : 'No keys changed'
+    const sentences = [changes.length ? capitalizeFirstLetter(changes.join(', ')) : 'No keys changed']
+    if (skipped && startedAt) {
+        sentences.push(
+            `Skipped ${pluralize(skipped, 'key')} rolled since your first attempt at ${formatRetryStart(startedAt)}, so their new secrets keep working`
+        )
+    }
+    if (failed) {
+        sentences.push(
+            `Couldn't change ${pluralize(failed, 'key')}. Try again to change ${pluralize(failed, 'it', 'them', false)}`
+        )
+    }
+    return sentences.length === 1 ? sentences[0] : sentences.map((sentence) => `${sentence}.`).join(' ')
+}
+
+// A bulk action commits each key on its own, so a server error or a lost response can come after some keys changed.
+// A 4xx comes from a check that runs before any key changes.
+function mayHaveChangedKeys(error: unknown): boolean {
+    const status = error instanceof ApiError ? error.status : undefined
+    return !status || status >= 500
 }
 
 function describeFailure(action: KeyAction, target: KeyActionTarget, error: unknown): string {
     const status = error instanceof ApiError ? error.status : undefined
-    if (target === 'all' && (!status || status >= 500)) {
-        // A bulk action commits each key on its own, so a server error or a lost response can come after the
-        // earlier keys changed. A 4xx comes from a check that runs before any key changes.
+    if (target === 'all' && mayHaveChangedKeys(error)) {
         return `Couldn't ${action} all keys. Some keys may already have changed. Check the list, then try again.`
     }
     if (target === 'single' && status === 404) {
@@ -72,6 +108,7 @@ export interface organizationPersonalAPIKeysLogicValues {
     keyActionInFlight: string | null
     keys: OrganizationPersonalAPIKeyApi[]
     keysLoading: boolean
+    rollAllRetrySince: string | null
     search: string
 }
 
@@ -110,6 +147,9 @@ export interface organizationPersonalAPIKeysLogicActions {
     rollKey: (id: string) => {
         id: string
     }
+    setRollAllRetrySince: (startedAt: string | null) => {
+        startedAt: string | null
+    }
     setSearch: (search: string) => {
         search: string
     }
@@ -143,6 +183,7 @@ export const organizationPersonalAPIKeysLogic = kea<organizationPersonalAPIKeysL
         revokeAllKeys: true,
         keyActionSuccess: (inFlight: string) => ({ inFlight }),
         keyActionFailure: (inFlight: string) => ({ inFlight }),
+        setRollAllRetrySince: (startedAt: string | null) => ({ startedAt }),
     }),
     loaders({
         keys: [
@@ -152,13 +193,15 @@ export const organizationPersonalAPIKeysLogic = kea<organizationPersonalAPIKeysL
                     // Page through everything — an incomplete list would be a security-audit blind spot.
                     const url = getPersonalApiKeysListUrl(ApiConfig.getCurrentOrganizationId())
                     // nosemgrep: prefer-codegen-api -- Legacy raw API call with a URL built at runtime and an unchecked response type. Use a generated function if one covers this endpoint.
-                    return await api.loadPaginatedResults<OrganizationPersonalAPIKeyApi>(url)
+                    return await api.loadPaginatedResults<OrganizationPersonalAPIKeyApi>(url, Number.POSITIVE_INFINITY)
                 },
             },
         ],
     }),
     reducers({
         search: ['', { setSearch: (_, { search }) => search }],
+        // Set while a roll of all keys has keys left to change, so that a retry skips the keys it already rolled.
+        rollAllRetrySince: [null as string | null, { setRollAllRetrySince: (_, { startedAt }) => startedAt }],
         // A finished action clears only its own marker, so it does not unmark an action that started after it.
         keyActionInFlight: [
             null as string | null,
@@ -198,17 +241,22 @@ export const organizationPersonalAPIKeysLogic = kea<organizationPersonalAPIKeysL
             }),
         ],
     }),
-    listeners(({ actions, cache }) => {
+    listeners(({ actions, values, cache }) => {
         const runKeyAction = async (
             action: KeyAction,
             inFlight: string,
-            request: (organizationId: string) => Promise<OrganizationPersonalAPIKeyBulkActionResultApi>
+            request: (organizationId: string) => Promise<KeyActionCounts>
         ): Promise<void> => {
             const target: KeyActionTarget = inFlight === ALL_KEYS ? 'all' : 'single'
             posthog.capture('organization personal api key action confirmed', { action, target })
             try {
-                const counts = await request(ApiConfig.getCurrentOrganizationId())
-                lemonToast.success(describeCounts(counts))
+                const { startedAt, ...counts } = await request(ApiConfig.getCurrentOrganizationId())
+                const message = describeCounts({ ...counts, startedAt })
+                if (counts.failed) {
+                    lemonToast.warning(message)
+                } else {
+                    lemonToast.success(message)
+                }
                 posthog.capture('organization personal api key action completed', { action, target, ...counts })
                 actions.keyActionSuccess(inFlight)
             } catch (error) {
@@ -243,10 +291,28 @@ export const organizationPersonalAPIKeysLogic = kea<organizationPersonalAPIKeysL
                 )
             },
             rollAllKeys: async () => {
-                await runKeyAction('roll', ALL_KEYS, organizationPersonalApiKeysRollAll)
+                const skipRolledSince = values.rollAllRetrySince
+                const attemptStartedAt = dayjs().toISOString()
+                await runKeyAction('roll', ALL_KEYS, async (organizationId) => {
+                    try {
+                        const result = await organizationPersonalApiKeysRollAll(organizationId, {
+                            skip_rolled_since: skipRolledSince,
+                        })
+                        actions.setRollAllRetrySince(result.failed ? result.started_at : null)
+                        return countsFromBulkResult(result)
+                    } catch (error) {
+                        if (mayHaveChangedKeys(error)) {
+                            // With no response, the browser's clock marks the start of this attempt.
+                            actions.setRollAllRetrySince(skipRolledSince ?? attemptStartedAt)
+                        }
+                        throw error
+                    }
+                })
             },
             revokeAllKeys: async () => {
-                await runKeyAction('revoke', ALL_KEYS, organizationPersonalApiKeysRevokeAll)
+                await runKeyAction('revoke', ALL_KEYS, async (organizationId) =>
+                    countsFromBulkResult(await organizationPersonalApiKeysRevokeAll(organizationId))
+                )
             },
         }
     }),
