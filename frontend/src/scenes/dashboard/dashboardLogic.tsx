@@ -147,16 +147,20 @@ import {
 import {
     type DashboardSection,
     type SectionLayouts,
+    type TileGroupMoveDirection,
+    type TileGroupMoveDirections,
     type TileGroupMoveOptions,
     getCollapsedTileGroupKeys,
     getDashboardSections,
     getDashboardTabs,
     getEmptyTileGroupKeys,
     getLayoutAfterSectionChange,
+    getLayoutAfterTileGroupMove,
     getLayoutAfterTileMove,
     getSectionGroupKey,
     getSectionLayouts,
     getTileGroupLabel,
+    getTileGroupMoveDirections,
     getTileGroupMoveOptions,
     UNGROUPED_TILES_TAB_KEY,
     getTileGroupSectionKey,
@@ -915,8 +919,10 @@ export interface dashboardLogicValues {
     terraformModalOpen: boolean
     textTileId: DashboardTileIdOrNew
     textTiles: DashboardTile[]
+    tileGroupBands: DashboardSection[]
     tileGroupDisplay: TileGroupDisplay
     tileGroupKeys: Map<number, string>
+    tileGroupMoveDirections: Record<string, TileGroupMoveDirections>
     tileGroupMoveOptions: Record<number, TileGroupMoveOptions>
     tileGroupSectionLayouts: SectionLayouts[]
     tileGroupSections: DashboardSection[]
@@ -1165,6 +1171,13 @@ export interface dashboardLogicActions {
     }
     loadingDashboardItemsStarted: (action: DashboardLoadAction) => {
         action: DashboardLoadAction
+    }
+    moveTileGroup: (
+        groupKey: string,
+        direction: TileGroupMoveDirection
+    ) => {
+        direction: TileGroupMoveDirection
+        groupKey: string
     }
     moveTileToSection: (
         tileId: number,
@@ -1989,15 +2002,18 @@ export interface dashboardLogicMeta {
             sizeKey: DashboardLayoutSize | undefined
         ) => Layout | undefined
         layoutForItem: (layout: Layout | undefined) => Record<string, TileLayout>
-        tileGroupSections: (
+        tileGroupBands: (
             tileGroupSectionsEnabled: boolean,
             tiles: DashboardTile[],
             layouts: Partial<Record<string, Layout>>,
             dashboard: DashboardType | null,
             placement: DashboardPlacement,
-            tileGroupDisplay: TileGroupDisplay,
             canEditDashboard: boolean,
             isEditablePlacement: boolean
+        ) => DashboardSection[]
+        tileGroupSections: (
+            tileGroupBands: DashboardSection[],
+            tileGroupDisplay: TileGroupDisplay
         ) => DashboardSection[]
         tileGroupSectionLayouts: (
             tileGroupSections: DashboardSection[],
@@ -2008,6 +2024,11 @@ export interface dashboardLogicMeta {
             tileGroupSections: DashboardSection[],
             canEditDashboard: boolean
         ) => Record<number, TileGroupMoveOptions>
+        tileGroupMoveDirections: (
+            tileGroupBands: DashboardSection[],
+            tileGroupDisplay: TileGroupDisplay,
+            canEditLayout: boolean
+        ) => Record<string, TileGroupMoveDirections>
         refreshMetrics: (
             refreshStatus: Record<string, RefreshStatus>,
             refreshTilesTotal: number | null
@@ -2266,6 +2287,7 @@ export const dashboardLogic = kea<dashboardLogicType>([
         setRevealedTileGroup: (revealedTileGroup: RevealedTileGroup | null) => ({ revealedTileGroup }),
         /** A band grid reports its own layout, which joins the other bands into one dashboard layout. */
         updateTileGroupSectionLayout: (layouts: ResponsiveLayouts) => ({ layouts }),
+        moveTileGroup: (groupKey: string, direction: TileGroupMoveDirection) => ({ groupKey, direction }),
         /** A null section takes the tile out of its group, and a null cell puts it below the target's tiles. */
         moveTileToSection: (
             tileId: number,
@@ -4495,15 +4517,14 @@ export const dashboardLogic = kea<dashboardLogicType>([
                 return layoutForItem
             },
         ],
-        /** Full-width bands, one per tile group, or none when the dashboard shows one grid. */
-        tileGroupSections: [
+        /** Full-width bands, one per tile group, or none when the dashboard shows one grid. Tabs keep this order too. */
+        tileGroupBands: [
             (s) => [
                 s.tileGroupSectionsEnabled,
                 s.tiles,
                 s.layouts,
                 s.dashboard,
                 s.placement,
-                s.tileGroupDisplay,
                 s.canEditDashboard,
                 s.isEditablePlacement,
             ],
@@ -4513,7 +4534,6 @@ export const dashboardLogic = kea<dashboardLogicType>([
                 layouts: ResponsiveLayouts,
                 dashboard: DashboardType | null,
                 placement: DashboardPlacement,
-                tileGroupDisplay: TileGroupDisplay,
                 canEditDashboard: boolean,
                 isEditablePlacement: boolean
             ): DashboardSection[] => {
@@ -4525,14 +4545,19 @@ export const dashboardLogic = kea<dashboardLogicType>([
                     return []
                 }
                 const widgetTilesShown = isWidgetTileVisibleOnPlacement(placement)
-                const sections = getDashboardSections({
+                return getDashboardSections({
                     tiles: tiles.filter((tile) => !tile.widget || widgetTilesShown),
                     layout: layouts.sm,
                     groups,
                     emptyGroupKeys,
                 })
-                return tileGroupDisplay === 'tabs' ? getDashboardTabs(sections) : sections
             },
+        ],
+        /** The bands, or one tab per group when the dashboard shows tabs. */
+        tileGroupSections: [
+            (s) => [s.tileGroupBands, s.tileGroupDisplay],
+            (tileGroupBands: DashboardSection[], tileGroupDisplay: TileGroupDisplay): DashboardSection[] =>
+                tileGroupDisplay === 'tabs' ? getDashboardTabs(tileGroupBands) : tileGroupBands,
         ],
         tileGroupSectionLayouts: [
             (s) => [s.tileGroupSections, s.layouts, s.dashboard],
@@ -4550,6 +4575,16 @@ export const dashboardLogic = kea<dashboardLogicType>([
             (s) => [s.tileGroupSections, s.canEditDashboard],
             (tileGroupSections: DashboardSection[], canEditDashboard: boolean): Record<number, TileGroupMoveOptions> =>
                 canEditDashboard ? getTileGroupMoveOptions(tileGroupSections) : {},
+            { resultEqualityCheck: objectsEqual },
+        ],
+        tileGroupMoveDirections: [
+            (s) => [s.tileGroupBands, s.tileGroupDisplay, s.canEditLayout],
+            (
+                tileGroupBands: DashboardSection[],
+                tileGroupDisplay: TileGroupDisplay,
+                canEditLayout: boolean
+            ): Record<string, TileGroupMoveDirections> =>
+                canEditLayout ? getTileGroupMoveDirections(tileGroupBands, tileGroupDisplay) : {},
             { resultEqualityCheck: objectsEqual },
         ],
         refreshMetrics: [
@@ -4934,6 +4969,28 @@ export const dashboardLogic = kea<dashboardLogicType>([
             if (dashboardLayout) {
                 actions.stageLayouts({ sm: dashboardLayout })
             }
+        },
+        moveTileGroup: ({ groupKey, direction }) => {
+            if (!values.canEditLayout) {
+                return
+            }
+            const layout = getLayoutAfterTileGroupMove({
+                layout: values.layouts.sm ?? [],
+                sections: values.tileGroupBands,
+                groupKey,
+                direction,
+                groupDisplay: values.tileGroupDisplay,
+                compactor: getDashboardGridCompactor(values.dashboard?.customization?.layout_compaction),
+            })
+            if (!layout) {
+                return
+            }
+            actions.stageLayouts({ sm: layout })
+            posthog.capture('dashboard tile group reordered', {
+                dashboard_id: props.id,
+                direction,
+                group_display: values.tileGroupDisplay,
+            })
         },
         moveTileToSection: async ({ tileId, sectionKey, cell, method }) => {
             const capture = ({ sourceGroupKey, groupKey }: TileMove): void => {
@@ -6033,6 +6090,10 @@ export const dashboardLogic = kea<dashboardLogicType>([
         },
         changeTileGroupDisplay: ({ groupDisplay }) => {
             actions.triggerDashboardUpdate({ group_display: groupDisplay })
+            posthog.capture('dashboard tile group display changed', {
+                dashboard_id: props.id,
+                group_display: groupDisplay,
+            })
         },
         createTiles: ({ tiles }) => {
             const groupKey = values.newTileGroupKey
@@ -6090,6 +6151,7 @@ export const dashboardLogic = kea<dashboardLogicType>([
             // The API replaces every group on write, so send the others back unchanged.
             const groups = values.dashboard?.customization?.groups ?? {}
             actions.setTileGroups({ ...groups, [groupKey]: { ...groups[groupKey], title: title.trim() } })
+            posthog.capture('dashboard tile group renamed', { dashboard_id: props.id, has_title: !!title.trim() })
         },
         addTileGroup: ({ title }) => {
             // Each write sends every group, so a write that starts before the last one saves would drop its change.
@@ -6128,6 +6190,7 @@ export const dashboardLogic = kea<dashboardLogicType>([
             // Undo steps from before the delete can hold tiles in this group, so undo leaves them ungrouped.
             cache.removedTileGroupKeys = new Set([...(cache.removedTileGroupKeys ?? []), groupKey])
             actions.setTileGroups(groups)
+            posthog.capture('dashboard tile group deleted', { dashboard_id: props.id })
         },
         refreshTileGroup: async ({ groupKey }) => {
             const { waitingTileRefresh: waiting, refreshStatus, widgetRefreshStatus } = values
