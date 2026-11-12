@@ -23,6 +23,7 @@ from .github_comment_mapping import GithubCommentMapping
 from .inbound_event import ConversationInboundEvent, ConversationInboundEventSource, InboundPayloadTooLargeError
 from .intercom_import_job import IntercomImportJob
 from .purged_ticket_thread import PurgedTicketThread
+from .pylon_import_job import PylonImportJob
 from .restore_token import ConversationRestoreToken
 from .signing_secret import SigningSecret
 from .team_conversations_email_config import EmailChannel, EmailChannelConnectionStatus, EmailChannelKind
@@ -66,6 +67,7 @@ __all__ = [
     "IntercomImportJob",
     "Priority",
     "PurgedTicketThread",
+    "PylonImportJob",
     "RuleType",
     "SigningSecret",
     "Status",
