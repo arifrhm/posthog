@@ -7249,7 +7249,18 @@ def resume_task_run_in_cloud(
                 )
 
     if starts_new_run:
-        return _resume_task_run_in_new_run(run, team_id, user_id)
+        result = run_task(
+            run.task_id, team_id, user_id, validated_data={"mode": "interactive", "resume_from_run_id": run.id}
+        )
+        if result is None:
+            return "ownership_changed", None, None
+        if result.error is not None:
+            if result.error.code in ("task_done", "run_in_progress"):
+                return result.error.code, None, None
+            return f"refused:{result.error.detail}", None, None
+        if result.run_error or result.run_id is None:
+            return "workflow_failed", None, None
+        return "resumed", _task_run_detail_to_dto(_task_run_queryset().get(pk=result.run_id)), None
 
     if restart_dispatch_enabled:
         return "resumed", _task_run_detail_to_dto(_task_run_queryset().get(pk=run.pk)), None
@@ -7288,23 +7299,6 @@ def resume_task_run_in_cloud(
         return "workflow_failed", None, None
 
     return "resumed", _task_run_detail_to_dto(run), None
-
-
-def _resume_task_run_in_new_run(
-    run: TaskRun, team_id: int, user_id: int | None
-) -> tuple[str, contracts.TaskRunDetailDTO | None, str | None]:
-    result = run_task(
-        run.task_id, team_id, user_id, validated_data={"mode": "interactive", "resume_from_run_id": run.id}
-    )
-    if result is None:
-        return "ownership_changed", None, None
-    if result.error is not None:
-        if result.error.code in ("task_done", "run_in_progress"):
-            return result.error.code, None, None
-        return f"refused:{result.error.detail}", None, None
-    if result.run_error or result.run_id is None:
-        return "workflow_failed", None, None
-    return "resumed", _task_run_detail_to_dto(_task_run_queryset().get(pk=result.run_id)), None
 
 
 # --- Task presentation CRUD + actions ---
