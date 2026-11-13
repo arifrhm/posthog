@@ -9341,7 +9341,21 @@ class TestTaskRunAPI(BaseTaskAPITest):
             team=self.team,
             environment=TaskRun.Environment.CLOUD,
             status=TaskRun.Status.COMPLETED,
-            state={"pr_authorship_mode": "bot", "snapshot_external_id": "snap-1"},
+            state={"pr_authorship_mode": "bot", "snapshot_external_id": "snap-1", "initial_permission_mode": "plan"},
+            relayed_mcp_servers=["linear"],
+            imported_mcp_servers=[{"type": "http", "name": "docs", "url": "https://example.com/mcp", "headers": {}}],
+            artifacts=[
+                build_task_artifact_entry(
+                    artifact_id=artifact_id,
+                    name=f"{artifact_id}.txt",
+                    artifact_type=artifact_type,
+                    source="user",
+                    size=1,
+                    content_type="text/plain",
+                    storage_path=f"tasks/artifacts/{artifact_id}.txt",
+                )
+                for artifact_id, artifact_type in (("attachment-1", "user_attachment"), ("output-1", "agent_output"))
+            ],
         )
 
         with patch(
@@ -9357,6 +9371,10 @@ class TestTaskRunAPI(BaseTaskAPITest):
         self.assertEqual(response.json()["id"], str(new_run.id))
         self.assertEqual(new_run.state["resume_from_run_id"], str(run.id))
         self.assertEqual(new_run.state["mode"], "interactive")
+        self.assertEqual(new_run.state["initial_permission_mode"], "plan")
+        self.assertEqual(new_run.relayed_mcp_servers, ["linear"])
+        self.assertEqual(new_run.imported_mcp_servers, run.imported_mcp_servers)
+        self.assertEqual([artifact["id"] for artifact in new_run.artifacts], ["attachment-1"])
         mock_resume.assert_not_called()
 
     @patch("products.tasks.backend.temporal.client.resume_task_in_cloud_workflow")

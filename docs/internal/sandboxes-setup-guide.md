@@ -132,7 +132,8 @@ An open turn blocks sandbox rotation. If its sandbox disappears before completio
 a workflow-origin run fails instead of reporting unfinished work as completed.
 
 A run whose profile is `on` in the `tasks-run-per-wake` feature flag payload does not rotate.
-Near the sandbox time limit it saves a snapshot, and the next message starts a new run from that snapshot.
+If it is idle near the sandbox time limit it ends like an idle timeout, and the next message starts a new run from its snapshot.
+If a turn is open it keeps running and saves a snapshot, as a run that cannot rotate does today.
 
 With `tasks-rotation-activity-guard`, active heartbeats also block rotation until
 the agent reports idle, including background work after a user turn ends.

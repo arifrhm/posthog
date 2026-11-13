@@ -7249,16 +7249,17 @@ def resume_task_run_in_cloud(
                 )
 
     if starts_new_run:
-        result = run_task(
-            run.task_id, team_id, user_id, validated_data={"mode": "interactive", "resume_from_run_id": run.id}
-        )
+        result = run_task(run.task_id, team_id, user_id, validated_data=_new_run_resume_data(run))
         if result is None:
             return "ownership_changed", None, None
         if result.error is not None:
             if result.error.code in ("task_done", "run_in_progress"):
                 return result.error.code, None, None
             return f"refused:{result.error.detail}", None, None
-        if result.run_error or result.run_id is None:
+        if result.run_id is None:
+            return "workflow_failed", None, None
+        _carry_user_attachments(run, result.run_id)
+        if result.run_error:
             return "workflow_failed", None, None
         return "resumed", _task_run_detail_to_dto(_task_run_queryset().get(pk=result.run_id)), None
 
@@ -7299,6 +7300,35 @@ def resume_task_run_in_cloud(
         return "workflow_failed", None, None
 
     return "resumed", _task_run_detail_to_dto(run), None
+
+
+def _new_run_resume_data(run: TaskRun) -> dict[str, Any]:
+    data: dict[str, Any] = {"mode": "interactive", "resume_from_run_id": run.id}
+    if permission_mode := (run.state or {}).get("initial_permission_mode"):
+        data["initial_permission_mode"] = permission_mode
+    if run.imported_mcp_servers:
+        data["imported_mcp_servers"] = run.imported_mcp_servers
+    if run.relayed_mcp_servers:
+        data["relayed_mcp_servers"] = run.relayed_mcp_servers
+    return data
+
+
+def _carry_user_attachments(source_run: TaskRun, successor_run_id: UUID) -> None:
+    attachments = [
+        artifact
+        for artifact in (source_run.artifacts or [])
+        if isinstance(artifact, dict) and artifact.get("type") == "user_attachment"
+    ]
+    if not attachments:
+        return
+    with transaction.atomic():
+        successor = TaskRun.objects.select_for_update().get(pk=successor_run_id, team_id=source_run.team_id)
+        carried_ids = {artifact.get("id") for artifact in attachments}
+        successor.artifacts = [
+            *attachments,
+            *(artifact for artifact in (successor.artifacts or []) if artifact.get("id") not in carried_ids),
+        ]
+        successor.save(update_fields=["artifacts", "updated_at"])
 
 
 # --- Task presentation CRUD + actions ---
