@@ -131,6 +131,9 @@ completion signal arrived during delivery. This applies to user and peer message
 An open turn blocks sandbox rotation. If its sandbox disappears before completion,
 a workflow-origin run fails instead of reporting unfinished work as completed.
 
+A run whose profile is `on` in the `tasks-run-per-wake` feature flag payload does not rotate.
+Near the sandbox time limit it saves a snapshot, and the next message starts a new run from that snapshot.
+
 With `tasks-rotation-activity-guard`, active heartbeats also block rotation until
 the agent reports idle, including background work after a user turn ends.
 Pi message and tool events mark the agent active. The first activity after a turn

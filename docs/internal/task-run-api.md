@@ -152,6 +152,11 @@ A run that is waiting for its first message or is being canceled does not count.
 Neither does a run with no writes for 24 hours, which is marked failed when the next run starts.
 A scheduled run that comes due while another run is in progress still starts.
 
+The `tasks-run-per-wake` feature flag payload maps a profile key to `on` or `off`.
+For a profile set to `on`, `resume_in_cloud` starts a new run that continues the run named in the request.
+The response is the new run, so use its id from then on.
+Every profile is off until the payload names it.
+
 ## MCP tools
 
 - `tasks-create` creates an idle task. It does not accept run-start inputs.

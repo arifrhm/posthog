@@ -235,6 +235,7 @@ from products.tasks.backend.run_options import (
     run_options_record as run_options_record,
     validate_run_options as validate_run_options,
 )
+from products.tasks.backend.run_per_wake import starts_new_run_per_wake
 from products.tasks.backend.task_done import (
     TaskDoneError as TaskDoneError,
     check_wake as check_wake,
@@ -7128,8 +7129,10 @@ def resume_task_run_in_cloud(
     Returns ``(outcome, run_dto, debug_use_modal)``. ``outcome`` is one of: ``"not_found"``,
     ``"already_active"`` (400), ``"not_cloud"`` (400), ``"ownership_changed"`` (400), ``"invalid_origin"`` (400),
     ``"task_done"`` (409), ``"run_in_progress"`` (409), ``"auth_error:<detail>"``
-    (400, GitHub auth), ``"workflow_failed"`` (502), or ``"resumed"`` (run_dto set).
+    (400, GitHub auth), ``"refused:<detail>"`` (400), ``"workflow_failed"`` (502), or ``"resumed"`` (run_dto set).
     Mirrors ``TaskRunViewSet.resume_in_cloud``.
+
+    A profile switched on in ``tasks-run-per-wake`` resumes into a new run, and ``run_dto`` is that run.
     """
     from products.tasks.backend.facade.streams import reset_task_run_stream  # noqa: PLC0415
     from products.tasks.backend.redis import run_uses_dedicated_stream  # noqa: PLC0415
@@ -7169,6 +7172,7 @@ def resume_task_run_in_cloud(
     )
 
     warm_done_mode(run.task)
+    starts_new_run = starts_new_run_per_wake(run.task.profile, team_id)
     with transaction.atomic():
         task = Task.objects.select_for_update().get(id=task_id, team_id=team_id)
         run = (
@@ -7220,28 +7224,32 @@ def resume_task_run_in_cloud(
                     ),
                 }
 
-        prior_status = run.status
-        prior_environment = run.environment
-        prior_completed_at = run.completed_at
-        prior_queued_at = run.queued_at
-        prior_state = dict(run.state or {})
-        run.prepare_for_cloud_resume()
-        task.observe_run_started_beside_live_runs(run)
+        if not starts_new_run:
+            prior_status = run.status
+            prior_environment = run.environment
+            prior_completed_at = run.completed_at
+            prior_queued_at = run.queued_at
+            prior_state = dict(run.state or {})
+            run.prepare_for_cloud_resume()
+            task.observe_run_started_beside_live_runs(run)
 
-        if restart_dispatch_enabled:
-            snapshot = RestartSnapshot(
-                status=prior_status,
-                environment=prior_environment,
-                completed_at=prior_completed_at.isoformat() if prior_completed_at else None,
-                queued_at=prior_queued_at.isoformat() if prior_queued_at else None,
-                state=prior_state,
-            )
-            create_dispatch(
-                run,
-                TaskWorkflowDispatch.Kind.RESTART,
-                build_restart_payload(user_id, snapshot),
-                run.workflow_id,
-            )
+            if restart_dispatch_enabled:
+                snapshot = RestartSnapshot(
+                    status=prior_status,
+                    environment=prior_environment,
+                    completed_at=prior_completed_at.isoformat() if prior_completed_at else None,
+                    queued_at=prior_queued_at.isoformat() if prior_queued_at else None,
+                    state=prior_state,
+                )
+                create_dispatch(
+                    run,
+                    TaskWorkflowDispatch.Kind.RESTART,
+                    build_restart_payload(user_id, snapshot),
+                    run.workflow_id,
+                )
+
+    if starts_new_run:
+        return _resume_task_run_in_new_run(run, team_id, user_id)
 
     if restart_dispatch_enabled:
         return "resumed", _task_run_detail_to_dto(_task_run_queryset().get(pk=run.pk)), None
@@ -7280,6 +7288,23 @@ def resume_task_run_in_cloud(
         return "workflow_failed", None, None
 
     return "resumed", _task_run_detail_to_dto(run), None
+
+
+def _resume_task_run_in_new_run(
+    run: TaskRun, team_id: int, user_id: int | None
+) -> tuple[str, contracts.TaskRunDetailDTO | None, str | None]:
+    result = run_task(
+        run.task_id, team_id, user_id, validated_data={"mode": "interactive", "resume_from_run_id": run.id}
+    )
+    if result is None:
+        return "ownership_changed", None, None
+    if result.error is not None:
+        if result.error.code in ("task_done", "run_in_progress"):
+            return result.error.code, None, None
+        return f"refused:{result.error.detail}", None, None
+    if result.run_error or result.run_id is None:
+        return "workflow_failed", None, None
+    return "resumed", _task_run_detail_to_dto(_task_run_queryset().get(pk=result.run_id)), None
 
 
 # --- Task presentation CRUD + actions ---

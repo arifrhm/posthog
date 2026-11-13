@@ -9331,6 +9331,34 @@ class TestTaskRunAPI(BaseTaskAPITest):
         self.assertEqual(run.status, TaskRun.Status.QUEUED)
         mock_resume.assert_called_once_with(str(run.id), run.workflow_id)
 
+    @patch("products.tasks.backend.temporal.client.execute_task_processing_workflow")
+    @patch("products.tasks.backend.temporal.client.resume_task_in_cloud_workflow")
+    def test_resume_in_cloud_starts_a_new_run_for_a_profile_switched_to_run_per_wake(self, mock_resume, _mock_start):
+        task = self.create_task()
+        Task.objects.filter(id=task.id).update(profile="user")
+        run = TaskRun.objects.create(
+            task=task,
+            team=self.team,
+            environment=TaskRun.Environment.CLOUD,
+            status=TaskRun.Status.COMPLETED,
+            state={"pr_authorship_mode": "bot", "snapshot_external_id": "snap-1"},
+        )
+
+        with patch(
+            "products.tasks.backend.run_per_wake.posthoganalytics.get_feature_flag_payload",
+            return_value={"user": "on"},
+        ):
+            response = self.client.post(f"/api/projects/@current/tasks/{task.id}/runs/{run.id}/resume_in_cloud/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.json())
+        run.refresh_from_db()
+        self.assertEqual(run.status, TaskRun.Status.COMPLETED)
+        new_run = TaskRun.objects.exclude(id=run.id).get(task=task)
+        self.assertEqual(response.json()["id"], str(new_run.id))
+        self.assertEqual(new_run.state["resume_from_run_id"], str(run.id))
+        self.assertEqual(new_run.state["mode"], "interactive")
+        mock_resume.assert_not_called()
+
     @patch("products.tasks.backend.temporal.client.resume_task_in_cloud_workflow")
     def test_resume_in_cloud_falls_back_to_team_integration_when_no_user_integration(self, mock_resume):
         integration = Integration.objects.create(team=self.team, kind="github", config={"access_token": "token"})

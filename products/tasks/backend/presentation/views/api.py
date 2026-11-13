@@ -4395,7 +4395,10 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
 
     @validated_request(
         responses={
-            200: OpenApiResponse(response=TaskRunDetailSerializer, description="Run resumed in cloud"),
+            200: OpenApiResponse(
+                response=TaskRunDetailSerializer,
+                description="The run now working in the cloud. It can be a new run that continues the one you resumed.",
+            ),
             400: OpenApiResponse(
                 response=TaskRunErrorResponseSerializer, description="Run already active or workflow failed"
             ),
@@ -4416,7 +4419,10 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
             ),
         },
         summary="Resume task run in cloud",
-        description="Resume an existing task run in a cloud sandbox. Terminates any existing workflow and starts a new one.",
+        description=(
+            "Resume a finished task run in a cloud sandbox. The response is the run that continues the work. "
+            "Use its id from then on, because it can differ from the id you sent."
+        ),
     )
     @action(
         detail=True,
@@ -4472,6 +4478,11 @@ class TaskRunViewSet(TeamAndOrgViewSetMixin, viewsets.GenericViewSet):
                         "attr": "origin_product",
                     }
                 ).data,
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if outcome.startswith("refused:"):
+            return Response(
+                TaskRunErrorResponseSerializer({"error": outcome.split(":", 1)[1]}).data,
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if outcome.startswith("auth_error:"):
