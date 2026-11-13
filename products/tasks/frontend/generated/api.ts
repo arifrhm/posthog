@@ -2079,7 +2079,7 @@ export const getTasksRunsResumeInCloudCreateUrl = (projectId: string, taskId: st
 }
 
 /**
- * Resume an existing task run in a cloud sandbox. Terminates any existing workflow and starts a new one.
+ * Resume a finished task run in a cloud sandbox. The response is the run that continues the work. Use its id from then on, because it can differ from the id you sent.
  * @summary Resume task run in cloud
  */
 export const tasksRunsResumeInCloudCreate = async (
